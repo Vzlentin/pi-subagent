@@ -39,7 +39,7 @@ It also gets the tools of installed packages that declare `piDurable` entries. I
 - `["read", "bash"]`: investigation that may run tests or other commands; bash can modify files.
 - Omit `tools` for implementation work.
 
-Spawn gives the child's name and random handle. Keep the handle for later actions. Subagents persist after their current turn completes: `wait`, completion, and becoming idle do not terminate them. They survive `/reload` and the end of the spawning Pi session. They are only removed by `stop`.
+Spawn prints `Spawned <name> (<handle>)`. The handle is the short hex ID in parentheses, not the name. Keep the handle for later actions. Subagents persist after their current turn completes: `wait`, completion, and becoming idle do not terminate them. They survive `/reload` and the end of the spawning Pi session. They are only removed by `stop`.
 
 ## Inspect and wait
 
@@ -51,7 +51,7 @@ Spawn gives the child's name and random handle. Keep the handle for later action
 
 Use `list` at any time to rediscover the subagents of this session and their handles, names, and current states if you no longer remember them.
 
-`wait` waits until the subagent is idle, up to `timeout` seconds (default 1800), and gives its latest final assistant response. It fails when the last turn failed.
+`wait` waits until the subagent is idle, up to `timeout` seconds (default 1800), and gives its latest final assistant response. It fails when the last turn failed. `subagent` tool calls in one message run in message order, so a `wait` after a `send` in the same message waits for the answer to that message.
 
 ## Communicate
 

@@ -61,6 +61,7 @@ const toolSpawns = new Map([
 	["Durable spawn", "Durable spawned"],
 	["Task:\nNest tool", "Nest tool"],
 	["No cwd", "No cwd child"],
+	["Task:\nSend and wait", "Send and wait child"],
 ]);
 /** Resolved when the model asks the `subagent` tool to wait, by the prompt of the turn. */
 const toolWaits = new Map<string, PromiseWithResolvers<string>>();
@@ -86,6 +87,17 @@ async function respond(
 			toolWaits.get(prompt)?.resolve(handle);
 			return fauxAssistantMessage(fauxToolCall("subagent", { action: "wait", handle }), { stopReason: "toolUse" });
 		}
+	}
+	// After its spawn and wait, `Task:\nSend and wait` sends to the child and waits for it in one message.
+	const results = messages.filter((m) => m.role === "toolResult");
+	if (prompt === "Task:\nSend and wait" && last?.role === "toolResult" && results.length === 2) {
+		const handle = /\(([a-z0-9]+)\)$/m.exec(results[0] === undefined ? "" : textOf(results[0]))?.[1];
+		if (handle === undefined) throw new Error("no handle in the spawn result");
+		const toolCalls = [
+			fauxToolCall("subagent", { action: "send", handle, message: "Sent message" }),
+			fauxToolCall("subagent", { action: "wait", handle }),
+		];
+		return fauxAssistantMessage(toolCalls, { stopReason: "toolUse" });
 	}
 	if (last?.role === "toolResult") return fauxAssistantMessage(`Tool said: ${textOf(last)}`);
 	calls.push({ provider: model.provider, model: model.id, thinking: options?.reasoning, prompt });
@@ -402,6 +414,15 @@ describe("subagent", { timeout: 30_000 }, () => {
 			),
 		);
 		expect(called("Task:\nNest tool")).toBe(2);
+	});
+
+	it("runs a send and a wait in one message in order", async () => {
+		const handle = handleOf(await cli(["spawn", "--prompt", "Send and wait"]));
+		const { stdout } = await cli(["wait", handle]);
+		expect(stdout).toMatch(
+			new RegExp(`^${handle} finished\n\nTool said: [a-z0-9]+ finished\n\nAnswer to Sent message\n`),
+		);
+		expect(called("Sent message")).toBe(1);
 	});
 
 	it("gives children the host's own tool when pi-subagent is also an installed package", async () => {

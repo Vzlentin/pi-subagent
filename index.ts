@@ -17,6 +17,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
 		description: TOOL_DESCRIPTION,
 		parameters,
 		outputSchema: output,
+		executionMode: "sequential",
 		async execute(toolCallId, args, signal, _onUpdate, ctx) {
 			const { text, data } = await runTool(args, {
 				caller: ctx.sessionManager.getSessionId(),

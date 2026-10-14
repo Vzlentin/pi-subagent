@@ -37,6 +37,8 @@ The extension gives Pi the `subagent` tool. It does what the CLI does, with one 
 
 A spawn without `provider`, `model`, or `thinking` uses the caller's. A `spawn` or `send` that comes again with the same `key` finds the first one and does not repeat it. Without `key`, the call is the key. Each caller has its own keys. When the call is aborted, for example with Esc, a `wait` stops; the child continues.
 
+`subagent` calls in one message run one after another, in message order, so a `wait` after a `send` waits for the answer to that message. A round with a `subagent` call runs all of its tool calls in order, `bash` and `read` included.
+
 The CLI runs each command as a call of the same tool. There are two other adapters:
 
 - In Pi, the caller is the session ID, the same as `PI_SESSION_ID` for the CLI, so `/subagent`, the widget, and `subagent list` in that session show the tool's children.

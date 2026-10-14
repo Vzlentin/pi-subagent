@@ -28,6 +28,7 @@ export function subagentTool(durable: typeof Durable, ai: typeof Ai, scope: Dura
 		parameters,
 		structuredOutputSchema: output,
 		replay: "safe",
+		executionMode: "sequential",
 		async execute(args, api, context) {
 			const agent = await api.agent(context);
 			const { text, data } = await runTool(args, {

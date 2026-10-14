@@ -10,9 +10,10 @@ const THINKING_LEVELS: ReadonlySet<string> = new Set(["off", "minimal", "low", "
 const NO_ABORT = new AbortController().signal;
 
 export const TOOL_DESCRIPTION = `Spawn and manage subagents: separate agents with their own context, for second opinions, independent investigations and delegated work.
-- spawn: start a child with \`prompts\` and \`files\`. It uses your provider, model and thinking level unless you give others. Give it a short \`name\`. It prints the child's handle.
+- spawn: start a child with \`prompts\` and \`files\`. It uses your provider, model and thinking level unless you give others. Give it a short \`name\`. It prints \`Spawned <name> (<handle>)\`. The handle is the short hex ID in parentheses, not the name.
 - status, wait, send, rename, stop: act on the child \`handle\`. \`wait\` waits until the child is idle (up to \`timeout\` seconds, default 1800) and gives its last answer. \`send\` steers a busy child, or queues \`message\` with \`followUp\`.
 - list: your children.
+Calls in one message run one after another, in message order, so a \`wait\` after a \`send\` gives the answer to that message.
 Children persist after a turn. Stop each child when you no longer need it.`;
 
 /** The parameters and the output schema of the tool, built with the `Type` of the caller's pi-ai. */
@@ -40,7 +41,7 @@ export function toolSchemas(Type: typeof Ai.Type) {
 		tools: texts("spawn: the only tools the child gets; default read, write, edit, bash and the package tools"),
 		prompts: texts("spawn: the task, in parts"),
 		files: texts("spawn: files whose text goes before the task"),
-		handle: text("send, wait, status, rename, stop: the child's handle"),
+		handle: text("send, wait, status, rename, stop: the hex ID that spawn prints in parentheses, not the name"),
 		message: text("send: the message"),
 		followUp: Type.Optional(Type.Boolean({ description: "send: queue after the current answer, not a steer" })),
 		timeout: Type.Optional(Type.Integer({ minimum: 1, description: "wait: seconds; default 1800" })),
