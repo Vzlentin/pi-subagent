@@ -341,7 +341,11 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 	const record = await childRecord(harness, handle);
 	const conversation = await childConversation(harness, record);
 	// The request ID makes a repeated spawn find the first submission, also after a crash before it.
-	await conversation.submit({ type: "input", content: request.prompt, requestId: record.lastRequest }, context);
+	await submitAs(harness, handle, record, conversation, {
+		type: "input",
+		content: request.prompt,
+		requestId: `spawn:${request.requestId}`,
+	});
 	return childInfo(harness, handle, record);
 }
 
@@ -353,19 +357,12 @@ async function sendChild(
 	const record = await ownRecord(harness, request.handle, request.caller);
 	const conversation = await childConversation(harness, record);
 	const busy = await isBusy(harness, record);
-	await harness.commit(async (tx) => {
-		const current = (await tx.doc(Children)).children[request.handle];
-		if (current !== undefined) current.lastRequest = request.requestId;
-	}, context);
-	await conversation.submit(
-		{
-			type: "input",
-			content: request.message,
-			whenBusy: request.followUp ? "followUp" : "steer",
-			requestId: request.requestId,
-		},
-		context,
-	);
+	await submitAs(harness, request.handle, record, conversation, {
+		type: "input",
+		content: request.message,
+		whenBusy: request.followUp ? "followUp" : "steer",
+		requestId: request.requestId,
+	});
 	const verb = !busy ? "Prompted" : request.followUp ? "Queued follow-up for" : "Steered";
 	return { verb, child: await childInfo(harness, request.handle) };
 }
@@ -424,6 +421,26 @@ async function childConversation(harness: Harness, record: ChildRecord): Promise
 	const conversation = await harness.conversation(record.conversationId, context);
 	if (conversation === undefined) throw new Error(`Missing conversation ${record.conversationId}`);
 	return conversation;
+}
+
+/**
+ * Submits `input` to the child `handle`. A request ID with no submission yet becomes `lastRequest` before the submit,
+ * so a host that stops between the two still finds the submission. A repeated request keeps `lastRequest`, so it
+ * does not move back to an older request.
+ */
+async function submitAs(
+	harness: Harness,
+	handle: string,
+	record: ChildRecord,
+	conversation: Conversation,
+	input: Parameters<Conversation["submit"]>[0] & { requestId: string },
+): Promise<void> {
+	await harness.commit(async (tx) => {
+		if ((await tx.submissionByRequest(record.conversationId, input.requestId)) !== undefined) return;
+		const current = (await tx.doc(Children)).children[handle];
+		if (current !== undefined) current.lastRequest = input.requestId;
+	}, context);
+	await conversation.submit(input, context);
 }
 
 async function isBusy(harness: Harness, record: ChildRecord): Promise<boolean> {

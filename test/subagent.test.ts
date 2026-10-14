@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 import type { AssistantMessage, Message, SimpleStreamOptions, TranscriptContext } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { Harness } from "@earendil-works/pi-durable";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { connect, statePaths } from "../client.ts";
 import { type Host, runHost } from "../host.ts";
 
@@ -309,11 +310,85 @@ describe("subagent", { timeout: 30_000 }, () => {
 			expect(await client.request({ type: "wait", handle: first.handle, timeout: 10 })).toEqual({
 				answer: "Answer to Twice?",
 			});
+			// A repeat after success finds its first submission and does not move `wait` back to it.
+			await client.request(spawn);
+			expect(await client.request({ type: "wait", handle: first.handle, timeout: 10 })).toEqual({
+				answer: "Answer to Twice?",
+			});
+			await client.request({ ...send, requestId: "send-newer", message: "Newer" });
+			expect(await client.request({ type: "wait", handle: first.handle, timeout: 10 })).toEqual({
+				answer: "Answer to Newer",
+			});
+			await client.request(send);
+			expect(await client.request({ type: "wait", handle: first.handle, timeout: 10 })).toEqual({
+				answer: "Answer to Newer",
+			});
 		} finally {
 			client.close();
 		}
 		expect(called("Once")).toBe(1);
 		expect(called("Twice?")).toBe(1);
+		expect(called("Newer")).toBe(1);
+	});
+
+	it("keeps the prompt of a spawn that stopped before its submit, also after a send", async () => {
+		await host?.close();
+		const open = Harness.open.bind(Harness);
+		const opened = vi.spyOn(Harness, "open").mockImplementationOnce(async (...args) => {
+			const harness = await open(...args);
+			// The first conversation lookup after the spawn commits its record is the one before the submit.
+			vi.spyOn(harness, "conversation").mockRejectedValueOnce(new Error("Stopped before submit"));
+			return harness;
+		});
+		const caller = "interrupted";
+		const spawn = {
+			type: "spawn",
+			requestId: "spawn-interrupted",
+			caller,
+			provider: "faux",
+			model: "faux-1",
+			thinking: "medium",
+			cwd: root,
+			prompt: "First prompt",
+		} as const;
+		try {
+			host = await startHost();
+			const client = await connect({ start: false });
+			if (client === undefined) throw new Error("no host");
+			try {
+				await expect(client.request(spawn)).rejects.toThrow("Stopped before submit");
+			} finally {
+				client.close();
+			}
+			await host?.close();
+		} finally {
+			opened.mockRestore();
+		}
+		host = await startHost();
+		const client = await connect({ start: false });
+		if (client === undefined) throw new Error("no host");
+		try {
+			const [child] = await client.request({ type: "list", caller });
+			if (child === undefined) throw new Error("no child");
+			const handle = child.handle;
+			await client.request({
+				type: "send",
+				requestId: "send-between",
+				caller,
+				handle,
+				message: "Between",
+				followUp: false,
+			});
+			expect(await client.request({ type: "wait", handle, timeout: 10 })).toEqual({ answer: "Answer to Between" });
+			expect((await client.request(spawn)).handle).toBe(handle);
+			expect(await client.request({ type: "wait", handle, timeout: 10 })).toEqual({
+				answer: "Answer to First prompt",
+			});
+		} finally {
+			client.close();
+		}
+		expect(called("First prompt")).toBe(1);
+		expect(called("Between")).toBe(1);
 	});
 
 	it("finishes a turn after the host restarts", async () => {
