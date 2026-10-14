@@ -37,7 +37,15 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
-import { type ChildInfo, type ChildState, PROTOCOL_VERSION, type Replies, type Reply, type Request } from "./client.ts";
+import {
+	type ChildInfo,
+	type ChildState,
+	onLines,
+	PROTOCOL_VERSION,
+	type Replies,
+	type Reply,
+	type Request,
+} from "./client.ts";
 
 /** The host exits after this long with no connection, no live task and no request. */
 const IDLE_EXIT_MS = 5 * 60_000;
@@ -163,28 +171,21 @@ export async function runHost(options: {
 		connections.add(socket);
 		const abort = new AbortController();
 		aborts.add(abort);
-		let buffer = "";
 		let queue = Promise.resolve();
-		socket.setEncoding("utf8");
-		socket.on("data", (chunk: string) => {
-			buffer += chunk;
-			for (let end = buffer.indexOf("\n"); end !== -1; end = buffer.indexOf("\n")) {
-				const line = buffer.slice(0, end);
-				buffer = buffer.slice(end + 1);
-				queue = queue.then(async () => {
-					let reply: Reply;
-					try {
-						const request = JSON.parse(line) as Request;
-						if (request.type !== "hello" && request.type !== "list" && request.type !== "status") {
-							lastActivity = Date.now();
-						}
-						reply = { ok: true, value: await handle(request, abort.signal) };
-					} catch (error) {
-						reply = { ok: false, error: error instanceof Error ? error.message : String(error) };
+		onLines(socket, (line) => {
+			queue = queue.then(async () => {
+				let reply: Reply;
+				try {
+					const request = JSON.parse(line) as Request;
+					if (request.type !== "hello" && request.type !== "list" && request.type !== "status") {
+						lastActivity = Date.now();
 					}
-					if (!socket.destroyed) socket.write(`${JSON.stringify(reply)}\n`);
-				});
-			}
+					reply = { ok: true, value: await handle(request, abort.signal) };
+				} catch (error) {
+					reply = { ok: false, error: error instanceof Error ? error.message : String(error) };
+				}
+				if (!socket.destroyed) socket.write(`${JSON.stringify(reply)}\n`);
+			});
 		});
 		socket.on("error", () => socket.destroy());
 		socket.on("close", () => {
@@ -256,10 +257,8 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 			return sendChild(request, handler);
 		case "wait":
 			return waitChild(request, handler);
-		case "status": {
-			const record = await childRecord(handler.harness, request.handle);
-			return childInfo(handler.harness, request.handle, record);
-		}
+		case "status":
+			return childInfo(handler.harness, request.handle);
 		case "list": {
 			const state = await handler.harness.snapshot(Children, context);
 			const own = Object.entries(state?.children ?? {})
@@ -273,7 +272,7 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 				const record = (await tx.doc(Children)).children[request.handle];
 				if (record !== undefined) record.name = request.name;
 			}, context);
-			return childInfo(handler.harness, request.handle, await childRecord(handler.harness, request.handle));
+			return childInfo(handler.harness, request.handle);
 		}
 		case "stop": {
 			const record = await ownRecord(handler.harness, request.handle, request.caller);
@@ -345,7 +344,7 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 		context,
 	);
 	await setLastSubmission(harness, handle, submission.id);
-	return childInfo(harness, handle, await childRecord(harness, handle));
+	return childInfo(harness, handle);
 }
 
 async function sendChild(
@@ -367,7 +366,7 @@ async function sendChild(
 	);
 	await setLastSubmission(harness, request.handle, submission.id);
 	const verb = !busy ? "Prompted" : request.followUp ? "Queued follow-up for" : "Steered";
-	return { verb, child: await childInfo(harness, request.handle, await childRecord(harness, request.handle)) };
+	return { verb, child: await childInfo(harness, request.handle) };
 }
 
 async function waitChild(request: Extract<Request, { type: "wait" }>, handler: Handler): Promise<{ answer: string }> {
@@ -380,15 +379,17 @@ async function waitChild(request: Extract<Request, { type: "wait" }>, handler: H
 		if (timeout.aborted) throw new Error(`Timed out after ${request.timeout}s waiting for ${request.handle}`);
 		throw error;
 	}
-	const record = await childRecord(harness, request.handle);
-	const settled = await lastSettlement(harness, record);
+	const settled = await lastSettlement(harness, await childRecord(harness, request.handle));
 	if (settled?.status === "unanswered") throw new Error(failureText(request.handle, settled.reason, settled.detail));
-	if (settled !== undefined && settled.status !== "done") {
+	if (settled?.status !== "done" || settled.answer === undefined) {
 		throw new Error(`${request.handle} stopped with queued messages after a failed turn`);
 	}
-	const answer = await lastAnswer(conversation);
-	if (answer === undefined) throw new Error(`${request.handle} finished without an assistant response`);
-	return { answer };
+	const answer = settled.answer;
+	const entry = await harness.commit((tx) => tx.entry(AssistantEntry, answer), context);
+	const message = entry?.model?.[0];
+	const text =
+		message?.role === "assistant" ? message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])) : [];
+	return { answer: text.join("\n").trim() };
 }
 
 /** The depth of a child of `caller`: 1 for a caller that is not a child, and one more for each child above it. */
@@ -453,7 +454,9 @@ function failureText(handle: string, reason: string, detail: unknown): string {
 	return text === undefined ? `${handle} failed: ${reason}` : `${handle} failed: ${text}`;
 }
 
-async function childInfo(harness: Harness, handle: string, record: ChildRecord): Promise<ChildInfo> {
+/** The info of `handle`. A caller that already has the record gives it as `record`. */
+async function childInfo(harness: Harness, handle: string, record?: ChildRecord): Promise<ChildInfo> {
+	record ??= await childRecord(harness, handle);
 	const conversation = await childConversation(harness, record);
 	const agent = await conversation.agent(context);
 	let state: ChildState = "idle";
@@ -467,26 +470,6 @@ async function childInfo(harness: Harness, handle: string, record: ChildRecord):
 		model: agent.model?.modelId ?? "",
 		thinking: agent.thinkingLevel,
 	};
-}
-
-/** The text of the newest assistant entry, or its error message when it has no text. */
-async function lastAnswer(conversation: Conversation): Promise<string | undefined> {
-	let cursor: Parameters<Conversation["entries"]>[2];
-	do {
-		const page = await conversation.entries({}, 64, cursor, context);
-		for (const entry of page.items) {
-			if (entry.kind !== AssistantEntry.kind) continue;
-			const message = entry.model?.[0];
-			if (message?.role !== "assistant") continue;
-			const text = message.content
-				.flatMap((part) => (part.type === "text" ? [part.text] : []))
-				.join("\n")
-				.trim();
-			return text || message.errorMessage || "(no response text)";
-		}
-		cursor = page.next;
-	} while (cursor !== undefined);
-	return undefined;
 }
 
 /**

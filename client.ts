@@ -67,15 +67,9 @@ export type Replies = {
 export type Reply = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };
 
 /** The files of the host: `$XDG_STATE_HOME/pi-subagent/`, default `~/.local/state/pi-subagent/`. */
-export function statePaths(): { dir: string; lock: string; store: string; socket: string; log: string } {
+export function statePaths(): { dir: string; socket: string; log: string } {
 	const dir = join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "pi-subagent");
-	return {
-		dir,
-		lock: join(dir, "lock.sqlite"),
-		store: join(dir, "durable.sqlite"),
-		socket: join(dir, "host.sock"),
-		log: join(dir, "host.log"),
-	};
+	return { dir, socket: join(dir, "host.sock"), log: join(dir, "host.log") };
 }
 
 export function isValidRunName(value: unknown): value is string {
@@ -93,29 +87,41 @@ export function runDisplayName(metadata: { readonly handle: string; readonly nam
 	return metadata.name ? `${metadata.name} (${metadata.handle})` : metadata.handle;
 }
 
+/** The line of one child in a list. */
+export function childLine(child: ChildInfo): string {
+	return `${runDisplayName(child)}  ${child.state.padEnd(8)}  ${child.provider}/${child.model}  ${child.thinking}`;
+}
+
+/** Calls `onLine` with each line that arrives on `socket`, without its newline. */
+export function onLines(socket: Socket, onLine: (line: string) => void): void {
+	let buffer = "";
+	socket.setEncoding("utf8");
+	socket.on("data", (chunk: string) => {
+		buffer += chunk;
+		for (let end = buffer.indexOf("\n"); end !== -1; end = buffer.indexOf("\n")) {
+			const line = buffer.slice(0, end);
+			buffer = buffer.slice(end + 1);
+			onLine(line);
+		}
+	});
+}
+
 /** A connection to the host. Requests are answered in order, one reply line for each request line. */
 export class Client {
 	readonly #socket: Socket;
 	readonly #pending: { resolve: (value: unknown) => void; reject: (error: Error) => void }[] = [];
-	#buffer = "";
 	#ended = false;
 	/** The process ID of the host, from its `hello` reply. */
 	pid = 0;
 
 	constructor(socket: Socket) {
 		this.#socket = socket;
-		socket.setEncoding("utf8");
-		socket.on("data", (chunk: string) => {
-			this.#buffer += chunk;
-			for (let end = this.#buffer.indexOf("\n"); end !== -1; end = this.#buffer.indexOf("\n")) {
-				const line = this.#buffer.slice(0, end);
-				this.#buffer = this.#buffer.slice(end + 1);
-				const waiter = this.#pending.shift();
-				if (waiter === undefined) continue;
-				const reply = JSON.parse(line) as Reply;
-				if (reply.ok) waiter.resolve(reply.value);
-				else waiter.reject(new Error(reply.error));
-			}
+		onLines(socket, (line) => {
+			const waiter = this.#pending.shift();
+			if (waiter === undefined) return;
+			const reply = JSON.parse(line) as Reply;
+			if (reply.ok) waiter.resolve(reply.value);
+			else waiter.reject(new Error(reply.error));
 		});
 		socket.on("error", () => this.#end());
 		socket.on("close", () => this.#end());
@@ -171,6 +177,33 @@ export async function connect(options: { readonly start: boolean }): Promise<Cli
 	} catch (error) {
 		client.close();
 		throw error;
+	}
+}
+
+type OneShot<T extends Request["type"]> = Extract<Request, { type: T }>;
+
+/**
+ * Connects as `connect` does, sends `request`, and closes the connection. It is undefined when no host listens and
+ * `start` is false.
+ */
+export function request<T extends Request["type"]>(
+	request: OneShot<T>,
+	options: { readonly start: true },
+): Promise<Replies[T]>;
+export function request<T extends Request["type"]>(
+	request: OneShot<T>,
+	options: { readonly start: boolean },
+): Promise<Replies[T] | undefined>;
+export async function request<T extends Request["type"]>(
+	request: OneShot<T>,
+	options: { readonly start: boolean },
+): Promise<Replies[T] | undefined> {
+	const client = await connect(options);
+	if (client === undefined) return undefined;
+	try {
+		return await client.request(request);
+	} finally {
+		client.close();
 	}
 }
 

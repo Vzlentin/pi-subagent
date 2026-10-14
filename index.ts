@@ -1,20 +1,9 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type ChildInfo, connect, runDisplayName } from "./client.ts";
+import { childLine, request } from "./client.ts";
 
 const packageDir = dirname(fileURLToPath(import.meta.url));
-
-/** The children of `sessionId`, or undefined when no host runs and `start` is false. */
-async function listChildren(sessionId: string, start: boolean): Promise<readonly ChildInfo[] | undefined> {
-	const client = await connect({ start });
-	if (client === undefined) return undefined;
-	try {
-		return await client.request({ type: "list", caller: sessionId });
-	} finally {
-		client.close();
-	}
-}
 
 export default function subagentExtension(pi: ExtensionAPI) {
 	pi.on("resources_discover", () => ({ skillPaths: [join(packageDir, "skills")] }));
@@ -22,16 +11,12 @@ export default function subagentExtension(pi: ExtensionAPI) {
 	pi.registerCommand("subagent", {
 		description: "List the subagents spawned by this session",
 		handler: async (_args, ctx) => {
-			const children = (await listChildren(ctx.sessionManager.getSessionId(), true)) ?? [];
+			const children = await request({ type: "list", caller: ctx.sessionManager.getSessionId() }, { start: true });
 			if (children.length === 0) {
 				ctx.ui.notify("No subagents spawned by this session", "info");
 				return;
 			}
-			const lines = children.map(
-				(child) =>
-					`${runDisplayName(child)}  ${child.state.padEnd(8)}  ${child.provider}/${child.model}  ${child.thinking}`,
-			);
-			ctx.ui.notify(lines.join("\n"), "info");
+			ctx.ui.notify(children.map(childLine).join("\n"), "info");
 		},
 	});
 
@@ -45,7 +30,10 @@ export default function subagentExtension(pi: ExtensionAPI) {
 		refreshing = true;
 		try {
 			const context = widgetContext;
-			const children = await listChildren(context.sessionManager.getSessionId(), false).catch(() => undefined);
+			const children = await request(
+				{ type: "list", caller: context.sessionManager.getSessionId() },
+				{ start: false },
+			).catch(() => undefined);
 			if (context !== widgetContext) return;
 			if (children === undefined || children.length === 0) {
 				context.ui.setWidget("subagents", undefined);

@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { type Client, connect, isValidRunName, type Request, runDisplayName, statePaths } from "./client.ts";
+import { childLine, isValidRunName, request, runDisplayName, statePaths } from "./client.ts";
 
 const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
@@ -46,15 +46,6 @@ function caller(): string {
 }
 
 /** Sends one request to the host, which starts when none runs. */
-async function ask<T extends Request["type"]>(request: Extract<Request, { type: T }>) {
-	const client = (await connect({ start: true })) as Client;
-	try {
-		return await client.request<T>(request);
-	} finally {
-		client.close();
-	}
-}
-
 /** The text of `file` as Pi gives a file argument to the model. An empty file gives nothing. */
 function fileText(file: string): string {
 	if (statSync(file).size === 0) return "";
@@ -127,25 +118,28 @@ async function spawnSubagent(args: string[]): Promise<void> {
 
 	let prompt = files.map(fileText).join("");
 	if (prompts.length > 0) prompt += `Task:\n${prompts.join("\n\n")}`;
-	const child = await ask({
-		type: "spawn",
-		requestId: randomUUID(),
-		caller: caller(),
-		...(name === undefined ? {} : { name }),
-		provider,
-		model,
-		thinking,
-		cwd,
-		...(toolNames === undefined ? {} : { tools: toolNames }),
-		prompt,
-	});
+	const child = await request(
+		{
+			type: "spawn",
+			requestId: randomUUID(),
+			caller: caller(),
+			...(name === undefined ? {} : { name }),
+			provider,
+			model,
+			thinking,
+			cwd,
+			...(toolNames === undefined ? {} : { tools: toolNames }),
+			prompt,
+		},
+		{ start: true },
+	);
 	process.stdout.write(`Spawned ${runDisplayName(child)}\nState: busy\n`);
 }
 
 async function statusSubagent(args: string[]): Promise<void> {
 	const [handle] = args;
 	if (args.length !== 1 || handle === undefined) usage();
-	const child = await ask({ type: "status", handle: checkHandle(handle) });
+	const child = await request({ type: "status", handle: checkHandle(handle) }, { start: true });
 	process.stdout.write(
 		`${runDisplayName(child)}: ${child.state} (${child.provider}/${child.model}, ${child.thinking})\n`,
 	);
@@ -155,7 +149,7 @@ async function renameSubagent(args: string[]): Promise<void> {
 	const [handle, value] = args;
 	if (args.length !== 2 || handle === undefined || value === undefined) usage();
 	const name = normalizeRunName(value);
-	const child = await ask({ type: "rename", caller: caller(), handle: checkHandle(handle), name });
+	const child = await request({ type: "rename", caller: caller(), handle: checkHandle(handle), name }, { start: true });
 	process.stdout.write(`Renamed ${runDisplayName(child)}\n`);
 }
 
@@ -171,14 +165,17 @@ async function sendSubagent(args: string[]): Promise<void> {
 	}
 	const message = messageParts.join(" ").trim();
 	if (!message) fail("send requires a message");
-	const { verb, child } = await ask({
-		type: "send",
-		requestId: randomUUID(),
-		caller: caller(),
-		handle: checkHandle(handle),
-		message,
-		followUp,
-	});
+	const { verb, child } = await request(
+		{
+			type: "send",
+			requestId: randomUUID(),
+			caller: caller(),
+			handle: checkHandle(handle),
+			message,
+			followUp,
+		},
+		{ start: true },
+	);
 	process.stdout.write(`${verb} ${runDisplayName(child)}\n`);
 }
 
@@ -194,28 +191,26 @@ async function waitSubagent(args: string[]): Promise<void> {
 	const handle = args.shift();
 	if (!handle) usage();
 	const timeout = parseTimeout(args);
-	const { answer } = await ask({ type: "wait", handle: checkHandle(handle), timeout });
+	const { answer } = await request({ type: "wait", handle: checkHandle(handle), timeout }, { start: true });
 	process.stdout.write(`${handle} finished\n\n${answer}\n`);
 }
 
 async function stopSubagent(args: string[]): Promise<void> {
 	const [handle] = args;
 	if (args.length !== 1 || handle === undefined) usage();
-	const child = await ask({ type: "stop", caller: caller(), handle: checkHandle(handle) });
+	const child = await request({ type: "stop", caller: caller(), handle: checkHandle(handle) }, { start: true });
 	process.stdout.write(`Stopped ${runDisplayName(child)}\n`);
 }
 
 async function listSubagents(args: string[]): Promise<void> {
 	if (args.length !== 0) usage();
-	const children = await ask({ type: "list", caller: caller() });
+	const children = await request({ type: "list", caller: caller() }, { start: true });
 	if (children.length === 0) {
 		process.stdout.write("No subagents\n");
 		return;
 	}
 	for (const child of children) {
-		process.stdout.write(
-			`${runDisplayName(child)}  ${child.state.padEnd(8)}  ${child.provider}/${child.model}  ${child.thinking}\n`,
-		);
+		process.stdout.write(`${childLine(child)}\n`);
 	}
 }
 
