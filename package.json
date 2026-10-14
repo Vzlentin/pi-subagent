@@ -15,6 +15,11 @@
 			"./index.ts"
 		]
 	},
+	"piDurable": {
+		"extensions": [
+			"./durable.ts"
+		]
+	},
 	"engines": {
 		"node": ">=22.19.0"
 	},

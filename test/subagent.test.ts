@@ -3,13 +3,20 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage, Message, SimpleStreamOptions, TranscriptContext } from "@earendil-works/pi-ai";
+import * as ai from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { Harness } from "@earendil-works/pi-durable";
+import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import * as durable from "@earendil-works/pi-durable";
+import { AssistantEntry, Harness } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { connect, statePaths } from "../client.ts";
+import { connect, request, statePaths } from "../client.ts";
+import subagentEntry, { subagentTool } from "../durable.ts";
 import { type Host, runHost } from "../host.ts";
+import subagentExtension from "../index.ts";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "subagent.ts");
 
@@ -47,6 +54,15 @@ function nestCommand(): string {
 	].join("\n");
 }
 
+/** Prompts that call the `subagent` tool to spawn a child with the given prompt, then to wait for it. */
+const toolSpawns = new Map([
+	["Durable", "Durable child"],
+	["Durable spawn", "Durable spawned"],
+	["Task:\nNest tool", "Nest tool"],
+]);
+/** Resolved when the model asks the `subagent` tool to wait, by the prompt of the turn. */
+const toolWaits = new Map<string, PromiseWithResolvers<string>>();
+
 async function respond(
 	context: TranscriptContext,
 	options: SimpleStreamOptions | undefined,
@@ -57,6 +73,18 @@ async function respond(
 	const last = messages.at(-1);
 	const lastUser = messages.findLast((message) => message.role === "user");
 	const prompt = lastUser === undefined ? "" : textOf(lastUser);
+	const child = toolSpawns.get(prompt);
+	if (
+		child !== undefined &&
+		last?.role === "toolResult" &&
+		messages.filter((m) => m.role === "toolResult").length === 1
+	) {
+		const handle = /\(([a-z0-9]+)\)$/m.exec(textOf(last))?.[1];
+		if (handle !== undefined) {
+			toolWaits.get(prompt)?.resolve(handle);
+			return fauxAssistantMessage(fauxToolCall("subagent", { action: "wait", handle }), { stopReason: "toolUse" });
+		}
+	}
 	if (last?.role === "toolResult") return fauxAssistantMessage(`Tool said: ${textOf(last)}`);
 	calls.push({ provider: model.provider, model: model.id, thinking: options?.reasoning, prompt });
 	const gate = gates.get(prompt);
@@ -65,6 +93,10 @@ async function respond(
 			gate.promise,
 			new Promise((_, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("aborted")))),
 		]);
+	}
+	if (child !== undefined) {
+		const args = { action: "spawn", name: "nested", prompts: [child] };
+		return fauxAssistantMessage(fauxToolCall("subagent", args), { stopReason: "toolUse" });
 	}
 	if (prompt === "Task:\nUse a tool") {
 		return fauxAssistantMessage(fauxToolCall("bash", { command: `while [ ! -f go ]; do sleep 0.05; done` }), {
@@ -112,6 +144,71 @@ async function until(check: () => boolean): Promise<void> {
 
 function called(prompt: string): number {
 	return calls.filter((call) => call.prompt === prompt).length;
+}
+
+/** The `subagent` tool that the Pi extension registers, with `thinking` as Pi's thinking level. */
+function piTool(thinking: string): ToolDefinition {
+	const tools: ToolDefinition[] = [];
+	const pi = {
+		on: () => {},
+		registerCommand: () => {},
+		registerTool: (tool: ToolDefinition) => tools.push(tool),
+		getThinkingLevel: () => thinking,
+	};
+	subagentExtension(pi as unknown as ExtensionAPI);
+	const [tool] = tools;
+	if (tool === undefined) throw new Error("no tool");
+	return tool;
+}
+
+/** The context of a Pi tool call in the session `pi-session`, with the model `faux/<model>`. */
+function piContext(model: string): ExtensionToolContext {
+	return {
+		model: { provider: "faux", id: model },
+		sessionManager: { getSessionId: () => "pi-session" },
+		cwd: root,
+	} as unknown as ExtensionToolContext;
+}
+
+let piCalls = 0;
+
+/** Calls the Pi tool and gives its text and structured content. */
+async function callPi(
+	tool: ToolDefinition,
+	ctx: ExtensionToolContext,
+	args: Record<string, unknown>,
+	signal?: AbortSignal,
+): Promise<{ text: string; data: unknown }> {
+	const result = await tool.execute(`call-${++piCalls}`, args, signal, undefined, ctx);
+	const [content] = result.content;
+	return { text: content?.type === "text" ? content.text : "", data: result.structuredContent };
+}
+
+/** A pi-durable host over `store` with the `piDurable` entry of this package. */
+async function openDurable(store: string): Promise<Harness> {
+	const entry = subagentEntry({ durable, ai });
+	const registry = durable.createRegistry();
+	for (const extension of entry.extensions) registry.install(extension);
+	return Harness.open(await openNodeSqliteStorage(store), { models, registry }, BACKGROUND_CONTEXT);
+}
+
+/**
+ * A pi-durable host over `store` with the `subagent` tool, where the caller is `durable-test:<conversation ID>`. With
+ * `hangSpawn`, a spawn reaches the subagent host, but the tool call never finishes.
+ */
+async function openDurableTool(store: string, hangSpawn: boolean): Promise<Harness> {
+	const registry = durable.createRegistry();
+	registry.install(
+		subagentTool(durable, ai, {
+			caller: async (api) => `durable-test:${api.conversationId}`,
+			send: async (message, signal) => {
+				const reply = await request(message, { start: true, signal });
+				if (!hangSpawn || message.type !== "spawn") return reply;
+				return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason)));
+			},
+		}),
+	);
+	return Harness.open(await openNodeSqliteStorage(store), { models, registry }, BACKGROUND_CONTEXT);
 }
 
 beforeAll(async () => {
@@ -278,6 +375,143 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(called("Task:\nNest")).toBe(2);
 		// The nested child belongs to its parent, not to this caller.
 		expect((await cli(["list"])).stdout).not.toContain("nested");
+	});
+
+	it("lets a child spawn a child with the tool, but not a third level", async () => {
+		const handle = handleOf(await cli(["spawn", "--prompt", "Nest tool"]));
+		const { stdout } = await cli(["wait", handle]);
+		expect(stdout).toMatch(
+			new RegExp(
+				`^${handle} finished\n\nTool said: [a-z0-9]+ finished\n\nTool said: <harness>\n\\[error\\] Nested subagents are disabled\n`,
+			),
+		);
+		expect(called("Task:\nNest tool")).toBe(2);
+	});
+
+	it("runs the Pi tool with the caller's session, model and thinking level", async () => {
+		const tool = piTool("low");
+		const ctx = piContext("faux-2");
+		const spawned = await callPi(tool, ctx, { action: "spawn", name: "pi", prompts: ["From Pi"] });
+		const handle = (spawned.data as { value: { handle: string } }).value.handle;
+		expect(spawned.text).toBe(`Spawned pi (${handle})\nState: busy\n`);
+		expect(spawned.data).toMatchObject({
+			action: "spawn",
+			value: { handle, name: "pi", provider: "faux", model: "faux-2", thinking: "low" },
+		});
+		expect(await callPi(tool, ctx, { action: "wait", handle })).toEqual({
+			text: `${handle} finished\n\nAnswer to Task:\nFrom Pi\n`,
+			data: { action: "wait", value: { answer: "Answer to Task:\nFrom Pi" } },
+		});
+		expect(calls.find((call) => call.prompt === "Task:\nFrom Pi")).toEqual({
+			provider: "faux",
+			model: "faux-2",
+			thinking: "low",
+			prompt: "Task:\nFrom Pi",
+		});
+		expect((await cli(["list"], { PI_SESSION_ID: "pi-session" })).stdout).toContain(
+			`pi (${handle})  idle      faux/faux-2  low\n`,
+		);
+
+		const args = { action: "spawn", provider: "faux", model: "faux-1", thinking: "high", prompts: ["Pi override"] };
+		const other = (await callPi(tool, ctx, args)).data as { value: { handle: string } };
+		await callPi(tool, ctx, { action: "wait", handle: other.value.handle });
+		expect(calls.find((call) => call.prompt === "Task:\nPi override")).toMatchObject({
+			model: "faux-1",
+			thinking: "high",
+		});
+	});
+
+	it("stops a Pi tool wait on abort and leaves the child busy", async () => {
+		const tool = piTool("medium");
+		const ctx = piContext("faux-1");
+		gates.set("Task:\nPi gated", Promise.withResolvers());
+		const spawned = await callPi(tool, ctx, { action: "spawn", prompts: ["Pi gated"] });
+		const handle = (spawned.data as { value: { handle: string } }).value.handle;
+		await until(() => called("Task:\nPi gated") === 1);
+		await expect(callPi(tool, ctx, { action: "wait", handle }, AbortSignal.timeout(100))).rejects.toMatchObject({
+			name: "TimeoutError",
+		});
+		expect((await callPi(tool, ctx, { action: "status", handle })).text).toBe(
+			`${handle}: busy (faux/faux-1, medium)\n`,
+		);
+		gates.get("Task:\nPi gated")?.resolve();
+		expect((await callPi(tool, ctx, { action: "wait", handle })).text).toBe(
+			`${handle} finished\n\nAnswer to Task:\nPi gated\n`,
+		);
+	});
+
+	it("runs the tool in a pi-durable host and reruns a wait after a restart", async () => {
+		const context = BACKGROUND_CONTEXT;
+		const store = join(root, "durable-host.sqlite");
+		gates.set("Task:\nDurable child", Promise.withResolvers());
+		const waiting = Promise.withResolvers<string>();
+		toolWaits.set("Durable", waiting);
+		let harness = await openDurable(store);
+		try {
+			const conversation = await harness.root(context, {
+				agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root },
+			});
+			await conversation.submit({ type: "input", content: "Durable", requestId: "durable" }, context);
+			const handle = await waiting.promise;
+			await until(() => called("Task:\nDurable child") === 1);
+			// Let the wait reach the host before the restart.
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			await harness.close(context);
+			harness = await openDurable(store);
+			harness.resume();
+			gates.get("Task:\nDurable child")?.resolve();
+			const reopened = await harness.root(context);
+			const submission = await reopened.submit({ type: "input", content: "Durable", requestId: "durable" }, context);
+			const settled = await submission.wait(context);
+			if (settled.status !== "done" || settled.answer === undefined) throw new Error(JSON.stringify(settled));
+			const answer = settled.answer;
+			const entry = await harness.commit((tx) => tx.entry(AssistantEntry, answer), context);
+			const message = entry?.model?.[0];
+			expect(message?.role === "assistant" ? message.content : []).toEqual([
+				{ type: "text", text: `Tool said: ${handle} finished\n\nAnswer to Task:\nDurable child\n` },
+			]);
+			expect(called("Task:\nDurable child")).toBe(1);
+		} finally {
+			await harness.close(context);
+		}
+	});
+
+	it("reruns a pi-durable spawn after a restart and reaches the same child", async () => {
+		const context = BACKGROUND_CONTEXT;
+		const store = join(root, "durable-spawn.sqlite");
+		let harness = await openDurableTool(store, true);
+		try {
+			const conversation = await harness.root(context, {
+				agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root },
+			});
+			const caller = `durable-test:${conversation.id}`;
+			await conversation.submit({ type: "input", content: "Durable spawn", requestId: "durable-spawn" }, context);
+			await until(() => called("Task:\nDurable spawned") === 1);
+			await harness.close(context);
+			harness = await openDurableTool(store, false);
+			harness.resume();
+			const reopened = await harness.root(context);
+			const submission = await reopened.submit(
+				{ type: "input", content: "Durable spawn", requestId: "durable-spawn" },
+				context,
+			);
+			const settled = await submission.wait(context);
+			if (settled.status !== "done" || settled.answer === undefined) throw new Error(JSON.stringify(settled));
+			const children = await request({ type: "list", caller }, { start: false });
+			expect(children).toHaveLength(1);
+			const answer = settled.answer;
+			const entry = await harness.commit((tx) => tx.entry(AssistantEntry, answer), context);
+			const message = entry?.model?.[0];
+			expect(message?.role === "assistant" ? message.content : []).toEqual([
+				{
+					type: "text",
+					text: `Tool said: ${children?.[0]?.handle} finished\n\nAnswer to Task:\nDurable spawned\n`,
+				},
+			]);
+			expect(called("Task:\nDurable spawned")).toBe(1);
+		} finally {
+			await harness.close(context);
+		}
 	});
 
 	it("dedupes spawn and send by request ID", async () => {

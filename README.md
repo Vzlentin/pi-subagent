@@ -20,6 +20,30 @@ ln -s ../extensions/subagent/subagent.ts ~/.pi/agent/bin/subagent
 
 Run `/reload` in an existing Pi session. The extension contributes its bundled skill automatically.
 
+## Tool
+
+The extension gives Pi the `subagent` tool. It does what the CLI does, with one `action` and its arguments:
+
+| `action` | Arguments |
+| --- | --- |
+| `spawn` | `name`, `provider`, `model`, `thinking`, `cwd`, `tools`, `prompts`, `files`, `key` |
+| `send` | `handle`, `message`, `followUp`, `key` |
+| `wait` | `handle`, `timeout` (seconds, default 1800) |
+| `status`, `stop` | `handle` |
+| `rename` | `handle`, `name` |
+| `list` | none |
+
+`tools`, `prompts`, and `files` are arrays. A relative `cwd` or file path is relative to the caller's working directory. The text result is the output of the same CLI command. The structured result is `{ action, value }`, where `value` is the host's reply: the child for `spawn`, `status`, and `rename`, `{ verb, child }` for `send`, `{ answer }` for `wait`, the children for `list`, and `{ handle, name }` for `stop`.
+
+A spawn without `provider`, `model`, or `thinking` uses the caller's. A `spawn` or `send` that comes again with the same `key` finds the first one and does not repeat it. Without `key`, the call is the key. Each caller has its own keys. When the call is aborted, for example with Esc, a `wait` stops; the child continues.
+
+There are two adapters:
+
+- In Pi, the caller is the session ID, the same as `PI_SESSION_ID` for the CLI, so `/subagent`, the widget, and `subagent list` in that session show the tool's children.
+- In a pi-durable host, the `piDurable` entry `durable.ts` gives the tool. The caller is `<store>:<conversation ID>`, where `<store>` is a random ID that the store keeps. A call that runs again after the host restarts uses the same key, so its spawn or send does not repeat.
+
+The children get the tool too. Their caller is their conversation ID, as for their bash commands.
+
 ## Usage
 
 Spawn with a descriptive name using the parent session's provider, model, and thinking level:
@@ -49,7 +73,7 @@ subagent spawn \
   --prompt "Run the targeted tests"
 ```
 
-Restrict tools with `--tools`, a comma-separated list. Without it, a child gets `read`, `write`, `edit`, `bash`, and the tools of installed packages (see Limits). An unknown tool name is an error:
+Restrict tools with `--tools`, a comma-separated list. Without it, a child gets `read`, `write`, `edit`, `bash`, `subagent`, and the tools of installed packages (see Limits). An unknown tool name is an error:
 
 ```sh
 subagent spawn --tools read,bash --prompt "Investigate the failure"
@@ -92,8 +116,8 @@ A child's bash commands get `PI_SESSION_ID` (the child's conversation ID), `PI_P
 
 ## Limits
 
-- Children get only `read`, `write`, `edit`, `bash`, and the `piDurable` tools of installed packages. They get no MCP tools and no other Pi extensions. Entries of packages installed with npm do not load, because Node does not strip types under `node_modules`.
+- Children get only `read`, `write`, `edit`, `bash`, `subagent`, and the `piDurable` tools of installed packages. The host does not load the `piDurable` entry of `pi-subagent` itself, because it gives its children the tool with their own caller. They get no MCP tools and no other Pi extensions. Entries of packages installed with npm do not load, because Node does not strip types under `node_modules`.
 - Children get no `AGENTS.md` and no skills.
 - `--file` gives text only; images are not attached.
 - `stop` removes only the named child. The children that it spawned stay in the store, and no caller can reach them.
-- The CLI sends each `spawn` once. If the host stops during a `spawn` and you run the command again, there can be two children.
+- The CLI sends each `spawn` once and has no `key`. If the host stops during a `spawn` and you run the command again, there can be two children.

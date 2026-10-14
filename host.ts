@@ -45,6 +45,7 @@ import {
 	type Reply,
 	type Request,
 } from "./client.ts";
+import { subagentTool } from "./durable.ts";
 
 /** The host exits after this long with no connection, no live task and no request. */
 const IDLE_EXIT_MS = 5 * 60_000;
@@ -126,8 +127,15 @@ export async function runHost(options: {
 		throw error;
 	});
 	const envs = new Map<ConversationId, NodeExecutionEnv>();
-	const selected = [CodingTools, ...entries.extensions];
 	let harness: Harness;
+	// A child calls the host in this process, not through the socket, so a long `wait` cannot hold up the requests
+	// of a connection. Its caller is its conversation ID, which the depth limit and the owner checks key on.
+	const tool = subagentTool(durable, ai, {
+		caller: async (api) => String(api.conversationId),
+		send: (request, signal) =>
+			handleRequest(request, { harness, models, registry, signal: signal ?? new AbortController().signal }) as never,
+	});
+	const selected = [CodingTools, tool, ...entries.extensions];
 	try {
 		for (const extension of selected) registry.install(extension);
 		registry.install(SubagentTasks);
@@ -548,8 +556,11 @@ async function loadEntries(
 	try {
 		for (const root of roots) {
 			const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8").catch(() => "{}")) as {
+				readonly name?: string;
 				readonly piDurable?: { readonly extensions?: readonly string[] };
 			};
+			// The host installs its own tool, with its own caller.
+			if (manifest.name === "pi-subagent") continue;
 			for (const path of manifest.piDurable?.extensions ?? []) {
 				const entry = await import(pathToFileURL(resolvePath(root, path)).href);
 				entries.push(await entry.default({ durable, ai, events }));

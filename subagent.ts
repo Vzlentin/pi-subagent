@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { childLine, isValidRunName, request, runDisplayName, statePaths } from "./client.ts";
-
-const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+import {
+	checkHandle,
+	normalizeRunName,
+	outputText,
+	request,
+	spawnPrompt,
+	statePaths,
+	THINKING_LEVELS,
+} from "./client.ts";
 
 function fail(message: string): never {
 	throw new Error(message);
@@ -29,26 +35,9 @@ function valueAfter(args: string[], index: number, option: string): string {
 	return value;
 }
 
-function normalizeRunName(value: string): string {
-	const name = value.trim();
-	if (!isValidRunName(name)) fail("Subagent name must be a single line of 1 to 64 characters");
-	return name;
-}
-
-function checkHandle(handle: string): string {
-	if (!/^[a-z0-9]+$/.test(handle)) fail(`Invalid subagent handle: ${handle}`);
-	return handle;
-}
-
 /** `PI_SESSION_ID`, or `cli` outside Pi. */
 function caller(): string {
 	return process.env.PI_SESSION_ID || "cli";
-}
-
-/** The text of `file` as Pi gives a file argument to the model. An empty file gives nothing. */
-function fileText(file: string): string {
-	if (statSync(file).size === 0) return "";
-	return `<file name="${file}">\n${readFileSync(file, "utf8").replace(/^\uFEFF/, "")}\n</file>\n`;
 }
 
 async function spawnSubagent(args: string[]): Promise<void> {
@@ -106,7 +95,7 @@ async function spawnSubagent(args: string[]): Promise<void> {
 
 	if (!provider) fail("No provider specified and PI_PROVIDER is not set");
 	if (!model) fail("No model specified and PI_MODEL is not set");
-	if (!VALID_THINKING_LEVELS.has(thinking)) fail(`Invalid thinking level: ${thinking}`);
+	if (!THINKING_LEVELS.has(thinking)) fail(`Invalid thinking level: ${thinking}`);
 	const toolNames = tools
 		?.split(",")
 		.map((tool) => tool.trim())
@@ -115,8 +104,7 @@ async function spawnSubagent(args: string[]): Promise<void> {
 	if (prompts.length === 0 && files.length === 0) fail("spawn requires at least one --prompt or --file");
 	if (!existsSync(cwd)) fail(`Working directory not found: ${cwd}`);
 
-	let prompt = files.map(fileText).join("");
-	if (prompts.length > 0) prompt += `Task:\n${prompts.join("\n\n")}`;
+	const prompt = spawnPrompt(files, prompts);
 	const child = await request(
 		{
 			type: "spawn",
@@ -132,16 +120,14 @@ async function spawnSubagent(args: string[]): Promise<void> {
 		},
 		{ start: true },
 	);
-	process.stdout.write(`Spawned ${runDisplayName(child)}\nState: busy\n`);
+	process.stdout.write(outputText.spawn(child));
 }
 
 async function statusSubagent(args: string[]): Promise<void> {
 	const [handle] = args;
 	if (args.length !== 1 || handle === undefined) usage();
 	const child = await request({ type: "status", handle: checkHandle(handle) }, { start: true });
-	process.stdout.write(
-		`${runDisplayName(child)}: ${child.state} (${child.provider}/${child.model}, ${child.thinking})\n`,
-	);
+	process.stdout.write(outputText.status(child));
 }
 
 async function renameSubagent(args: string[]): Promise<void> {
@@ -149,7 +135,7 @@ async function renameSubagent(args: string[]): Promise<void> {
 	if (args.length !== 2 || handle === undefined || value === undefined) usage();
 	const name = normalizeRunName(value);
 	const child = await request({ type: "rename", caller: caller(), handle: checkHandle(handle), name }, { start: true });
-	process.stdout.write(`Renamed ${runDisplayName(child)}\n`);
+	process.stdout.write(outputText.rename(child));
 }
 
 async function sendSubagent(args: string[]): Promise<void> {
@@ -164,7 +150,7 @@ async function sendSubagent(args: string[]): Promise<void> {
 	}
 	const message = messageParts.join(" ").trim();
 	if (!message) fail("send requires a message");
-	const { verb, child } = await request(
+	const sent = await request(
 		{
 			type: "send",
 			requestId: randomUUID(),
@@ -175,7 +161,7 @@ async function sendSubagent(args: string[]): Promise<void> {
 		},
 		{ start: true },
 	);
-	process.stdout.write(`${verb} ${runDisplayName(child)}\n`);
+	process.stdout.write(outputText.send(sent));
 }
 
 function parseTimeout(args: string[]): number {
@@ -190,27 +176,21 @@ async function waitSubagent(args: string[]): Promise<void> {
 	const handle = args.shift();
 	if (!handle) usage();
 	const timeout = parseTimeout(args);
-	const { answer } = await request({ type: "wait", handle: checkHandle(handle), timeout }, { start: true });
-	process.stdout.write(`${handle} finished\n\n${answer}\n`);
+	const waited = await request({ type: "wait", handle: checkHandle(handle), timeout }, { start: true });
+	process.stdout.write(outputText.wait(handle, waited));
 }
 
 async function stopSubagent(args: string[]): Promise<void> {
 	const [handle] = args;
 	if (args.length !== 1 || handle === undefined) usage();
 	const child = await request({ type: "stop", caller: caller(), handle: checkHandle(handle) }, { start: true });
-	process.stdout.write(`Stopped ${runDisplayName(child)}\n`);
+	process.stdout.write(outputText.stop(child));
 }
 
 async function listSubagents(args: string[]): Promise<void> {
 	if (args.length !== 0) usage();
 	const children = await request({ type: "list", caller: caller() }, { start: true });
-	if (children.length === 0) {
-		process.stdout.write("No subagents\n");
-		return;
-	}
-	for (const child of children) {
-		process.stdout.write(`${childLine(child)}\n`);
-	}
+	process.stdout.write(outputText.list(children));
 }
 
 /** Runs the host in this process with Pi's models. It exits at once when another host runs. */
