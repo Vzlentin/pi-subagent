@@ -31,7 +31,6 @@ import {
 	Harness,
 	type HarnessSettings,
 	LiveDoc,
-	type SubmissionId,
 	type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -61,8 +60,11 @@ type ChildRecord = {
 	caller: string;
 	createdAt: string;
 	conversationId: ConversationId;
-	/** The newest submission to the child, which `wait` reads the settlement of. Null before the first one. */
-	lastSubmission: SubmissionId | null;
+	/**
+	 * The request ID of the newest submission to the child, which `wait` reads the settlement of. It is stored
+	 * before the submit, so a host that stops between the two still finds the submission.
+	 */
+	lastRequest: string;
 };
 
 /** The children by handle, and the handle of each spawn request ID. */
@@ -330,7 +332,7 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 				caller: request.caller,
 				createdAt: new Date().toISOString(),
 				conversationId: child.id,
-				lastSubmission: null,
+				lastRequest: `spawn:${request.requestId}`,
 			};
 			current.requests[request.requestId] = fresh;
 			return fresh;
@@ -339,12 +341,8 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 	const record = await childRecord(harness, handle);
 	const conversation = await childConversation(harness, record);
 	// The request ID makes a repeated spawn find the first submission, also after a crash before it.
-	const submission = await conversation.submit(
-		{ type: "input", content: request.prompt, requestId: `spawn:${request.requestId}` },
-		context,
-	);
-	await setLastSubmission(harness, handle, submission.id);
-	return childInfo(harness, handle);
+	await conversation.submit({ type: "input", content: request.prompt, requestId: record.lastRequest }, context);
+	return childInfo(harness, handle, record);
 }
 
 async function sendChild(
@@ -355,7 +353,11 @@ async function sendChild(
 	const record = await ownRecord(harness, request.handle, request.caller);
 	const conversation = await childConversation(harness, record);
 	const busy = await isBusy(harness, record);
-	const submission = await conversation.submit(
+	await harness.commit(async (tx) => {
+		const current = (await tx.doc(Children)).children[request.handle];
+		if (current !== undefined) current.lastRequest = request.requestId;
+	}, context);
+	await conversation.submit(
 		{
 			type: "input",
 			content: request.message,
@@ -364,7 +366,6 @@ async function sendChild(
 		},
 		context,
 	);
-	await setLastSubmission(harness, request.handle, submission.id);
 	const verb = !busy ? "Prompted" : request.followUp ? "Queued follow-up for" : "Steered";
 	return { verb, child: await childInfo(harness, request.handle) };
 }
@@ -425,22 +426,13 @@ async function childConversation(harness: Harness, record: ChildRecord): Promise
 	return conversation;
 }
 
-async function setLastSubmission(harness: Harness, handle: string, submission: SubmissionId): Promise<void> {
-	await harness.commit(async (tx) => {
-		const record = (await tx.doc(Children)).children[handle];
-		if (record !== undefined) record.lastSubmission = submission;
-	}, context);
-}
-
 async function isBusy(harness: Harness, record: ChildRecord): Promise<boolean> {
 	const live = await harness.snapshot(LiveDoc, record.conversationId, context);
 	return live?.run !== undefined;
 }
 
 async function lastSettlement(harness: Harness, record: ChildRecord) {
-	if (record.lastSubmission === null) return undefined;
-	const submission = await harness.submission(record.lastSubmission, context);
-	return submission?.status(context);
+	return harness.commit((tx) => tx.submissionByRequest(record.conversationId, record.lastRequest), context);
 }
 
 function failureText(handle: string, reason: string, detail: unknown): string {

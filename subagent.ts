@@ -45,7 +45,6 @@ function caller(): string {
 	return process.env.PI_SESSION_ID || "cli";
 }
 
-/** Sends one request to the host, which starts when none runs. */
 /** The text of `file` as Pi gives a file argument to the model. An empty file gives nothing. */
 function fileText(file: string): string {
 	if (statSync(file).size === 0) return "";
