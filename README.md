@@ -33,11 +33,11 @@ The extension gives Pi the `subagent` tool. It does what the CLI does, with one 
 | `rename` | `handle`, `name` |
 | `list` | none |
 
-`tools`, `prompts`, and `files` are arrays. A relative `cwd` or file path is relative to the caller's working directory. The text result is the output of the same CLI command. The structured result is `{ action, value }`, where `value` is the host's reply: the child for `spawn`, `status`, and `rename`, `{ verb, child }` for `send`, `{ answer }` for `wait`, the children for `list`, and `{ handle, name }` for `stop`.
+`tools`, `prompts`, and `files` are arrays. A relative `cwd` or file path is relative to the caller's working directory. A caller without a working directory cannot spawn. The text result is the output of the same CLI command. The structured result is `{ action, value }`, and the tool declares its schema, where `value` is the host's reply: the child for `spawn`, `status`, and `rename`, `{ verb, child }` for `send`, `{ answer }` for `wait`, the children for `list`, and `{ handle, name }` for `stop`.
 
 A spawn without `provider`, `model`, or `thinking` uses the caller's. A `spawn` or `send` that comes again with the same `key` finds the first one and does not repeat it. Without `key`, the call is the key. Each caller has its own keys. When the call is aborted, for example with Esc, a `wait` stops; the child continues.
 
-There are two adapters:
+The CLI runs each command as a call of the same tool. There are two other adapters:
 
 - In Pi, the caller is the session ID, the same as `PI_SESSION_ID` for the CLI, so `/subagent`, the widget, and `subagent list` in that session show the tool's children.
 - In a pi-durable host, the `piDurable` entry `durable.ts` gives the tool. The caller is `<store>:<conversation ID>`, where `<store>` is a random ID that the store keeps. A call that runs again after the host restarts uses the same key, so its spawn or send does not repeat.
@@ -116,7 +116,7 @@ A child's bash commands get `PI_SESSION_ID` (the child's conversation ID), `PI_P
 
 ## Limits
 
-- Children get only `read`, `write`, `edit`, `bash`, `subagent`, and the `piDurable` tools of installed packages. The host does not load the `piDurable` entry of `pi-subagent` itself, because it gives its children the tool with their own caller. They get no MCP tools and no other Pi extensions. Entries of packages installed with npm do not load, because Node does not strip types under `node_modules`.
+- Children get only `read`, `write`, `edit`, `bash`, `subagent`, and the `piDurable` tools of installed packages. The host does not load the `piDurable` entry of its own package directory, because it gives its children the tool with their own caller. They get no MCP tools and no other Pi extensions. Entries of packages installed with npm do not load, because Node does not strip types under `node_modules`.
 - Children get no `AGENTS.md` and no skills.
 - `--file` gives text only; images are not attached.
 - `stop` removes only the named child. The children that it spawned stay in the store, and no caller can reach them.

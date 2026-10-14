@@ -1,10 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { mkdirSync, rmSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdirSync, realpathSync, rmSync } from "node:fs";
+import { readFile, realpath } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
-import { join, resolve as resolvePath } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import * as ai from "@earendil-works/pi-ai";
@@ -46,6 +46,9 @@ import {
 	type Request,
 } from "./client.ts";
 import { subagentTool } from "./durable.ts";
+
+/** The root of this package, whose `piDurable` entry the host does not load. */
+const PACKAGE_DIR = realpathSync(dirname(fileURLToPath(import.meta.url)));
 
 /** The host exits after this long with no connection, no live task and no request. */
 const IDLE_EXIT_MS = 5 * 60_000;
@@ -132,8 +135,7 @@ export async function runHost(options: {
 	// of a connection. Its caller is its conversation ID, which the depth limit and the owner checks key on.
 	const tool = subagentTool(durable, ai, {
 		caller: async (api) => String(api.conversationId),
-		send: (request, signal) =>
-			handleRequest(request, { harness, models, registry, signal: signal ?? new AbortController().signal }) as never,
+		send: (request, signal) => handleRequest(request, { harness, models, registry, signal }),
 	});
 	const selected = [CodingTools, tool, ...entries.extensions];
 	try {
@@ -257,6 +259,10 @@ type Handler = {
 	readonly signal: AbortSignal;
 };
 
+function handleRequest<T extends Request["type"]>(
+	request: Extract<Request, { type: T }>,
+	handler: Handler,
+): Promise<Replies[T]>;
 async function handleRequest(request: Request, handler: Handler): Promise<Replies[Request["type"]]> {
 	switch (request.type) {
 		case "hello":
@@ -556,11 +562,10 @@ async function loadEntries(
 	try {
 		for (const root of roots) {
 			const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8").catch(() => "{}")) as {
-				readonly name?: string;
 				readonly piDurable?: { readonly extensions?: readonly string[] };
 			};
 			// The host installs its own tool, with its own caller.
-			if (manifest.name === "pi-subagent") continue;
+			if ((await realpath(root).catch(() => root)) === PACKAGE_DIR) continue;
 			for (const path of manifest.piDurable?.extensions ?? []) {
 				const entry = await import(pathToFileURL(resolvePath(root, path)).href);
 				entries.push(await entry.default({ durable, ai, events }));

@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage, Message, SimpleStreamOptions, TranscriptContext } from "@earendil-works/pi-ai";
@@ -59,6 +60,7 @@ const toolSpawns = new Map([
 	["Durable", "Durable child"],
 	["Durable spawn", "Durable spawned"],
 	["Task:\nNest tool", "Nest tool"],
+	["No cwd", "No cwd child"],
 ]);
 /** Resolved when the model asks the `subagent` tool to wait, by the prompt of the turn. */
 const toolWaits = new Map<string, PromiseWithResolvers<string>>();
@@ -170,6 +172,9 @@ function piContext(model: string): ExtensionToolContext {
 	} as unknown as ExtensionToolContext;
 }
 
+/** What the pi-durable test hosts report, such as a structured output that does not match the tool's schema. */
+const reports: unknown[] = [];
+
 let piCalls = 0;
 
 /** Calls the Pi tool and gives its text and structured content. */
@@ -189,7 +194,11 @@ async function openDurable(store: string): Promise<Harness> {
 	const entry = subagentEntry({ durable, ai });
 	const registry = durable.createRegistry();
 	for (const extension of entry.extensions) registry.install(extension);
-	return Harness.open(await openNodeSqliteStorage(store), { models, registry }, BACKGROUND_CONTEXT);
+	return Harness.open(
+		await openNodeSqliteStorage(store),
+		{ models, registry, onReport: (error) => reports.push(error) },
+		BACKGROUND_CONTEXT,
+	);
 }
 
 /**
@@ -208,7 +217,11 @@ async function openDurableTool(store: string, hangSpawn: boolean): Promise<Harne
 			},
 		}),
 	);
-	return Harness.open(await openNodeSqliteStorage(store), { models, registry }, BACKGROUND_CONTEXT);
+	return Harness.open(
+		await openNodeSqliteStorage(store),
+		{ models, registry, onReport: (error) => reports.push(error) },
+		BACKGROUND_CONTEXT,
+	);
 }
 
 beforeAll(async () => {
@@ -296,6 +309,9 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect((await cli(["spawn", "--model", "nope", "--prompt", "x"])).stderr).toBe("Unknown model: faux/nope\n");
 		expect((await cli(["spawn", "--tools", "read,grep", "--prompt", "x"])).stderr).toBe("Unknown tool: grep\n");
 		expect((await cli(["status", "abcdef"])).stderr).toBe("Unknown subagent: abcdef\n");
+		expect((await cli(["spawn", "--thinking", "huge", "--prompt", "x"])).stderr).toBe("Invalid thinking level: huge\n");
+		expect((await cli(["spawn", "--name", "x"])).stderr).toBe("spawn requires at least one prompt or file\n");
+		expect((await cli(["status", "ABC"])).stderr).toBe("Invalid subagent handle: ABC\n");
 	});
 
 	it("gives the child's bash its session ID, provider, model and thinking level", async () => {
@@ -388,6 +404,25 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(called("Task:\nNest tool")).toBe(2);
 	});
 
+	it("gives children the host's own tool when pi-subagent is also an installed package", async () => {
+		const linked = join(root, "linked-package");
+		await symlink(dirname(CLI), linked);
+		const settings = join(root, "agent", "settings.json");
+		await writeFile(settings, JSON.stringify({ retry: { enabled: false }, packages: [linked] }));
+		try {
+			await host?.close();
+			host = await startHost();
+			// With the entry of the package, the caller of a child would be `<store>:<conversation ID>`, and the depth
+			// limit would not see the third level.
+			const handle = handleOf(await cli(["spawn", "--prompt", "Nest tool"]));
+			expect((await cli(["wait", handle])).stdout).toContain("Nested subagents are disabled");
+		} finally {
+			await writeFile(settings, JSON.stringify({ retry: { enabled: false } }));
+			await host?.close();
+			host = await startHost();
+		}
+	});
+
 	it("runs the Pi tool with the caller's session, model and thinking level", async () => {
 		const tool = piTool("low");
 		const ctx = piContext("faux-2");
@@ -441,6 +476,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("runs the tool in a pi-durable host and reruns a wait after a restart", async () => {
+		reports.length = 0;
 		const context = BACKGROUND_CONTEXT;
 		const store = join(root, "durable-host.sqlite");
 		gates.set("Task:\nDurable child", Promise.withResolvers());
@@ -471,12 +507,14 @@ describe("subagent", { timeout: 30_000 }, () => {
 				{ type: "text", text: `Tool said: ${handle} finished\n\nAnswer to Task:\nDurable child\n` },
 			]);
 			expect(called("Task:\nDurable child")).toBe(1);
+			expect(reports).toEqual([]);
 		} finally {
 			await harness.close(context);
 		}
 	});
 
 	it("reruns a pi-durable spawn after a restart and reaches the same child", async () => {
+		reports.length = 0;
 		const context = BACKGROUND_CONTEXT;
 		const store = join(root, "durable-spawn.sqlite");
 		let harness = await openDurableTool(store, true);
@@ -509,6 +547,28 @@ describe("subagent", { timeout: 30_000 }, () => {
 				},
 			]);
 			expect(called("Task:\nDurable spawned")).toBe(1);
+			expect(reports).toEqual([]);
+		} finally {
+			await harness.close(context);
+		}
+	});
+
+	it("refuses a pi-durable spawn from a conversation without a working directory", async () => {
+		reports.length = 0;
+		const context = BACKGROUND_CONTEXT;
+		const harness = await openDurable(join(root, "durable-no-cwd.sqlite"));
+		try {
+			const conversation = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+			const submission = await conversation.submit({ type: "input", content: "No cwd", requestId: "no-cwd" }, context);
+			const settled = await submission.wait(context);
+			if (settled.status !== "done" || settled.answer === undefined) throw new Error(JSON.stringify(settled));
+			const answer = settled.answer;
+			const entry = await harness.commit((tx) => tx.entry(AssistantEntry, answer), context);
+			const message = entry?.model?.[0];
+			const text = message?.role === "assistant" && message.content[0]?.type === "text" ? message.content[0].text : "";
+			expect(text).toContain("spawn requires a caller with a working directory");
+			expect(called("Task:\nNo cwd child")).toBe(0);
+			expect(reports).toEqual([]);
 		} finally {
 			await harness.close(context);
 		}
@@ -655,5 +715,26 @@ describe("subagent", { timeout: 30_000 }, () => {
 			if (pid !== undefined) process.kill(pid, "SIGTERM");
 		}
 		await until(() => !existsSync(join(state, "pi-subagent", "host.sock")));
+	});
+
+	it("stops waiting for the host to start when the request aborts", async () => {
+		const state = join(root, "state3");
+		await mkdir(join(state, "pi-subagent"), { recursive: true });
+		// With the lock held, the started host exits at once, and nothing ever listens.
+		const lock = new DatabaseSync(join(state, "pi-subagent", "lock.sqlite"));
+		lock.exec("BEGIN EXCLUSIVE");
+		process.env.XDG_STATE_HOME = state;
+		try {
+			const signal = AbortSignal.timeout(200);
+			await expect(request({ type: "list", caller: "cli" }, { start: true, signal })).rejects.toMatchObject({
+				name: "TimeoutError",
+			});
+			// The lock stays held until the started host has found it held and exited.
+			const log = join(state, "pi-subagent", "host.log");
+			await until(() => existsSync(log) && readFileSync(log, "utf8").includes("Another subagent host runs"));
+		} finally {
+			process.env.XDG_STATE_HOME = join(root, "state");
+			lock.close();
+		}
 	});
 });

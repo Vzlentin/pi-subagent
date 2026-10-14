@@ -3,13 +3,11 @@
  * this package loads no second copy of either.
  */
 import { randomUUID } from "node:crypto";
-import type { JsonValue } from "@earendil-works/chord";
 import type { Context } from "@earendil-works/chord/context";
 import type * as Ai from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Extension, ToolExecutionApi } from "@earendil-works/pi-durable";
-import { request } from "./client.ts";
-import { runTool, type Send, TOOL_DESCRIPTION, toolSchemas } from "./tool.ts";
+import { runTool, type Send, sendToHost, TOOL_DESCRIPTION, toolSchemas } from "./tool.ts";
 
 /** How a host reaches the subagent host. */
 export type DurableScope = {
@@ -31,19 +29,18 @@ export function subagentTool(durable: typeof Durable, ai: typeof Ai, scope: Dura
 		structuredOutputSchema: output,
 		replay: "safe",
 		async execute(args, api, context) {
-			const caller = await scope.caller(api, context);
 			const agent = await api.agent(context);
 			const { text, data } = await runTool(args, {
-				caller,
-				requestId: (key) => `${caller}:${key ?? api.taskId}`,
+				caller: await scope.caller(api, context),
+				callKey: String(api.taskId),
 				provider: agent.model?.provider,
 				model: agent.model?.modelId,
 				thinking: agent.thinkingLevel,
-				cwd: agent.cwd ?? process.cwd(),
+				cwd: agent.cwd,
 				send: scope.send,
 				signal: context.abortSignal,
 			});
-			return { output: [{ type: "text", text }], structuredOutput: data as JsonValue };
+			return { output: [{ type: "text", text }], structuredOutput: data };
 		},
 	});
 	return durable.defineExtension({ name: "pi-subagent", tools: [tool] });
@@ -60,16 +57,18 @@ export default function subagentEntry({ durable, ai }: { readonly durable: typeo
 		scope: "session",
 		initial: () => ({ id: "" }),
 	});
+	// The store ID never changes, so the first call reads it and the next calls reuse it.
+	let storeId: string | undefined;
 	const extension = subagentTool(durable, ai, {
 		caller: async (api, context) => {
-			const id = await api.commit(async (tx) => {
+			storeId ??= await api.commit(async (tx) => {
 				const store = await tx.doc(Store);
 				if (store.id === "") store.id = randomUUID();
 				return store.id;
 			}, context);
-			return `${id}:${api.conversationId}`;
+			return `${storeId}:${api.conversationId}`;
 		},
-		send: (message, signal) => request(message, { start: true, signal }),
+		send: sendToHost,
 	});
 	return { extensions: [extension], close: async () => {} };
 }

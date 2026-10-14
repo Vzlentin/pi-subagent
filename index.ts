@@ -1,34 +1,34 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type JsonValue, Type } from "@earendil-works/pi-ai";
+import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { childLine, request } from "./client.ts";
-import { runTool, TOOL_DESCRIPTION, toolSchemas } from "./tool.ts";
+import { runTool, sendToHost, TOOL_DESCRIPTION, toolSchemas } from "./tool.ts";
 
 const packageDir = dirname(fileURLToPath(import.meta.url));
 
 export default function subagentExtension(pi: ExtensionAPI) {
 	pi.on("resources_discover", () => ({ skillPaths: [join(packageDir, "skills")] }));
 
-	const { parameters } = toolSchemas(Type);
+	const { parameters, output } = toolSchemas(Type);
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
 		description: TOOL_DESCRIPTION,
 		parameters,
+		outputSchema: output,
 		async execute(toolCallId, args, signal, _onUpdate, ctx) {
-			const caller = ctx.sessionManager.getSessionId();
 			const { text, data } = await runTool(args, {
-				caller,
-				requestId: (key) => `${caller}:${key ?? toolCallId}`,
+				caller: ctx.sessionManager.getSessionId(),
+				callKey: toolCallId,
 				provider: ctx.model?.provider,
 				model: ctx.model?.id,
 				thinking: pi.getThinkingLevel(),
 				cwd: ctx.cwd,
-				send: (message, abort) => request(message, { start: true, signal: abort }),
+				send: sendToHost,
 				signal,
 			});
-			return { content: [{ type: "text", text }], details: undefined, structuredContent: data as JsonValue };
+			return { content: [{ type: "text", text }], details: undefined, structuredContent: data };
 		},
 	});
 

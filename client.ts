@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync, statSync } from "node:fs";
+import { closeSync, mkdirSync, openSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -72,17 +72,6 @@ export function statePaths(): { dir: string; socket: string; log: string } {
 	return { dir, socket: join(dir, "host.sock"), log: join(dir, "host.log") };
 }
 
-/** The thinking levels a child can have. */
-export const THINKING_LEVELS: ReadonlySet<string> = new Set([
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-]);
-
 export function isValidRunName(value: unknown): value is string {
 	return (
 		typeof value === "string" &&
@@ -103,44 +92,6 @@ export function childLine(child: ChildInfo): string {
 	return `${runDisplayName(child)}  ${child.state.padEnd(8)}  ${child.provider}/${child.model}  ${child.thinking}`;
 }
 
-/** `value` without surrounding spaces. It must be a valid run name. */
-export function normalizeRunName(value: string): string {
-	const name = value.trim();
-	if (!isValidRunName(name)) throw new Error("Subagent name must be a single line of 1 to 64 characters");
-	return name;
-}
-
-export function checkHandle(handle: string): string {
-	if (!/^[a-z0-9]+$/.test(handle)) throw new Error(`Invalid subagent handle: ${handle}`);
-	return handle;
-}
-
-/** The text of `file` as Pi gives a file argument to the model. An empty file gives nothing. */
-export function fileText(file: string): string {
-	if (statSync(file).size === 0) return "";
-	return `<file name="${file}">\n${readFileSync(file, "utf8").replace(/^\uFEFF/, "")}\n</file>\n`;
-}
-
-/** The first message of a child: the text of each file, then `Task:` and the prompts. */
-export function spawnPrompt(files: readonly string[], prompts: readonly string[]): string {
-	let prompt = files.map(fileText).join("");
-	if (prompts.length > 0) prompt += `Task:\n${prompts.join("\n\n")}`;
-	return prompt;
-}
-
-/** The output of each command, the same for the CLI and the tool. */
-export const outputText = {
-	spawn: (child: ChildInfo) => `Spawned ${runDisplayName(child)}\nState: busy\n`,
-	status: (child: ChildInfo) =>
-		`${runDisplayName(child)}: ${child.state} (${child.provider}/${child.model}, ${child.thinking})\n`,
-	rename: (child: ChildInfo) => `Renamed ${runDisplayName(child)}\n`,
-	send: ({ verb, child }: Replies["send"]) => `${verb} ${runDisplayName(child)}\n`,
-	wait: (handle: string, { answer }: Replies["wait"]) => `${handle} finished\n\n${answer}\n`,
-	stop: (child: Replies["stop"]) => `Stopped ${runDisplayName(child)}\n`,
-	list: (children: Replies["list"]) =>
-		children.length === 0 ? "No subagents\n" : children.map((child) => `${childLine(child)}\n`).join(""),
-};
-
 /** Calls `onLine` with each line that arrives on `socket`, without its newline. */
 export function onLines(socket: Socket, onLine: (line: string) => void): void {
 	let buffer = "";
@@ -158,7 +109,7 @@ export function onLines(socket: Socket, onLine: (line: string) => void): void {
 /** A connection to the host. Requests are answered in order, one reply line for each request line. */
 export class Client {
 	readonly #socket: Socket;
-	readonly #pending: { resolve: (value: unknown) => void; reject: (error: Error) => void }[] = [];
+	readonly #pending: { resolve: (value: unknown) => void; reject: (reason: unknown) => void }[] = [];
 	#ended = false;
 	/** The process ID of the host, from its `hello` reply. */
 	pid = 0;
@@ -188,19 +139,24 @@ export class Client {
 		this.#socket.end();
 	}
 
-	#end(): void {
+	/** Rejects the pending requests with `reason` and closes the connection. The host then stops them. */
+	abort(reason: unknown): void {
+		this.#end(reason);
+		this.#socket.destroy();
+	}
+
+	#end(reason: unknown = new Error("The subagent host closed the connection")): void {
 		this.#ended = true;
-		for (const waiter of this.#pending.splice(0)) {
-			waiter.reject(new Error("The subagent host closed the connection"));
-		}
+		for (const waiter of this.#pending.splice(0)) waiter.reject(reason);
 	}
 }
 
 /**
  * A connection to the host after its `hello`. When no host listens and `start` is true, it starts one, detached, with its
- * output in `host.log`, and tries to connect for 10 s. When no host listens and `start` is false, it is undefined.
+ * output in `host.log`, and tries to connect for 10 s, or until `signal` aborts. When no host listens and `start` is
+ * false, it is undefined.
  */
-export async function connect(options: { readonly start: boolean }): Promise<Client | undefined> {
+export async function connect(options: ConnectOptions): Promise<Client | undefined> {
 	const paths = statePaths();
 	let socket = await tryConnect(paths.socket);
 	if (socket === undefined) {
@@ -208,6 +164,7 @@ export async function connect(options: { readonly start: boolean }): Promise<Cli
 		startHost(paths.dir, paths.log);
 		const deadline = Date.now() + START_TIMEOUT_MS;
 		while (socket === undefined) {
+			options.signal?.throwIfAborted();
 			if (Date.now() > deadline) throw new Error(`Could not start the subagent host; see ${paths.log}`);
 			await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
 			socket = await tryConnect(paths.socket);
@@ -229,41 +186,36 @@ export async function connect(options: { readonly start: boolean }): Promise<Cli
 	}
 }
 
+type ConnectOptions = { readonly start: boolean; readonly signal?: AbortSignal | undefined };
+
 type OneShot<T extends Request["type"]> = Extract<Request, { type: T }>;
 
 /**
  * Connects as `connect` does, sends `request`, and closes the connection. It is undefined when no host listens and
- * `start` is false.
+ * `start` is false. When `signal` aborts, it rejects with the abort reason, and the host stops the request.
  */
 export function request<T extends Request["type"]>(
 	request: OneShot<T>,
-	options: { readonly start: true; readonly signal?: AbortSignal | undefined },
+	options: ConnectOptions & { readonly start: true },
 ): Promise<Replies[T]>;
 export function request<T extends Request["type"]>(
 	request: OneShot<T>,
-	options: { readonly start: boolean; readonly signal?: AbortSignal | undefined },
+	options: ConnectOptions,
 ): Promise<Replies[T] | undefined>;
 export async function request<T extends Request["type"]>(
 	request: OneShot<T>,
-	options: { readonly start: boolean; readonly signal?: AbortSignal | undefined },
+	options: ConnectOptions,
 ): Promise<Replies[T] | undefined> {
 	const { signal } = options;
 	const client = await connect(options);
 	if (client === undefined) return undefined;
-	// An abort closes the connection, and the host then stops the request.
-	const onAbort = () => client.close();
-	signal?.addEventListener("abort", onAbort, { once: true });
+	const abort = () => client.abort(signal?.reason);
+	signal?.addEventListener("abort", abort, { once: true });
 	try {
 		signal?.throwIfAborted();
-		const reply = client.request(request);
-		if (signal === undefined) return await reply;
-		const aborted = new Promise<never>((_, reject) =>
-			signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
-		);
-		reply.catch(() => {});
-		return await Promise.race([reply, aborted]);
+		return await client.request(request);
 	} finally {
-		signal?.removeEventListener("abort", onAbort);
+		signal?.removeEventListener("abort", abort);
 		client.close();
 	}
 }
