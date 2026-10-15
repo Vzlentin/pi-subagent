@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Op } from "@earendil-works/chord/delta";
-import type { ConversationView } from "@earendil-works/pi-durable";
+import type { ConversationView, LiveState } from "@earendil-works/pi-durable";
 
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
 export const PROTOCOL_VERSION = 2;
@@ -81,6 +81,11 @@ export type Replies = {
 export type WatchLine =
 	| { readonly ops: readonly Op[]; readonly child: ChildInfo; readonly stopped?: undefined }
 	| { readonly stopped: true };
+
+/** The live state of a conversation view: the running turn, the streamed message and the tool slots. */
+export function liveState(view: ConversationView): LiveState | undefined {
+	return view.docs["pi.live"];
+}
 
 /** One reply line. */
 export type Reply = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };

@@ -33,7 +33,6 @@ import {
 	Harness,
 	type HarnessSettings,
 	LiveDoc,
-	type LiveState,
 	type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -42,6 +41,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import {
 	type ChildInfo,
 	type ChildState,
+	liveState,
 	onLines,
 	PROTOCOL_VERSION,
 	type Replies,
@@ -292,11 +292,8 @@ async function handleRequest(request: Request, handler: Handler): Promise<Replie
 			return waitChild(request, handler);
 		case "status":
 			return childInfo(handler.harness, request.handle);
-		case "abort": {
-			const conversation = await childConversation(handler.harness, await childRecord(handler.harness, request.handle));
-			await conversation.abort(context);
-			return childInfo(handler.harness, request.handle);
-		}
+		case "abort":
+			return abortChild(request, handler);
 		case "list": {
 			const state = await handler.harness.snapshot(Children, context);
 			const own = Object.entries(state?.children ?? {})
@@ -426,6 +423,12 @@ async function waitChild(request: Extract<Request, { type: "wait" }>, handler: H
 	return { answer: text.join("\n").trim() };
 }
 
+async function abortChild(request: Extract<Request, { type: "abort" }>, handler: Handler): Promise<ChildInfo> {
+	const conversation = await childConversation(handler.harness, await childRecord(handler.harness, request.handle));
+	await conversation.abort(context);
+	return childInfo(handler.harness, request.handle);
+}
+
 /** The depth of a child of `caller`: 1 for a caller that is not a child, and one more for each child above it. */
 function depthOf(caller: string, children: Readonly<Record<string, ChildRecord>>): number {
 	let depth = 1;
@@ -511,6 +514,7 @@ async function childInfo(harness: Harness, handle: string, record?: ChildRecord)
 		// An aborted turn leaves the child idle.
 		if (settled?.status === "unanswered" && settled.reason !== "aborted") state = "error";
 	}
+	if (agent.cwd === undefined) throw new Error(`Subagent ${handle} has no working directory`);
 	return {
 		handle,
 		...(record.name === undefined ? {} : { name: record.name }),
@@ -518,7 +522,7 @@ async function childInfo(harness: Harness, handle: string, record?: ChildRecord)
 		provider: agent.model?.provider ?? "",
 		model: agent.model?.modelId ?? "",
 		thinking: agent.thinkingLevel,
-		cwd: agent.cwd ?? "",
+		cwd: agent.cwd,
 	};
 }
 
@@ -576,7 +580,7 @@ async function serveWatch(harness: Harness, handle: string, socket: Socket): Pro
 		}
 	});
 	conversation.start(async (view, ops) => {
-		const busy = (view.docs["pi.live"] as LiveState | undefined)?.run !== undefined;
+		const busy = liveState(view)?.run !== undefined;
 		// Only the start and the end of a turn change the info. A stopped child has no record; its `stopped` line follows.
 		if (busy !== (last.state === "busy")) {
 			const info = await childInfo(harness, handle).catch(() => undefined);
