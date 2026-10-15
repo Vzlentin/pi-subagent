@@ -3,8 +3,8 @@ import { fileURLToPath } from "node:url";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { childLine, request } from "./client.ts";
+import { openViewerTab } from "./herdr.ts";
 import { runTool, sendToHost, TOOL_DESCRIPTION, toolSchemas } from "./tool.ts";
-import { herdr } from "./viewer.ts";
 
 const packageDir = dirname(fileURLToPath(import.meta.url));
 
@@ -51,27 +51,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
 				ctx.ui.notify(`Run in another terminal: ${command}`, "info");
 				return;
 			}
-			const label = child.name ?? child.handle;
-			const state = process.env.XDG_STATE_HOME;
-			const created = await herdr(
-				[
-					"tab",
-					"create",
-					"--cwd",
-					child.cwd,
-					"--label",
-					label,
-					"--focus",
-					...(state ? ["--env", `XDG_STATE_HOME=${state}`] : []),
-				],
-				process.env,
-			);
-			const pane = paneOf(created);
-			// The tab's shell may not have the CLI on PATH, so run this package's subagent.ts with this Node.
-			const viewer = `${[process.execPath, join(packageDir, "subagent.ts")]
-				.map((path) => `'${path.replaceAll("'", "'\\''")}'`)
-				.join(" ")} attach ${child.handle}`;
-			if (pane === undefined || (await herdr(["pane", "run", pane, viewer], process.env)) === undefined) {
+			if (!(await openViewerTab(child, process.env))) {
 				ctx.ui.notify(`Could not open a Herdr tab. Run in another terminal: ${command}`, "error");
 			}
 		},
@@ -124,15 +104,4 @@ export default function subagentExtension(pi: ExtensionAPI) {
 		widgetContext = undefined;
 		ctx.ui.setWidget("subagents", undefined);
 	});
-}
-
-/** The pane ID in the output of `herdr tab create`. */
-function paneOf(output: string | undefined): string | undefined {
-	try {
-		const pane = (JSON.parse(output ?? "") as { result?: { root_pane?: { pane_id?: unknown } } }).result?.root_pane
-			?.pane_id;
-		return typeof pane === "string" || typeof pane === "number" ? String(pane) : undefined;
-	} catch {
-		return undefined;
-	}
 }

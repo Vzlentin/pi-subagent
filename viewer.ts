@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { apply } from "@earendil-works/chord/delta";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
@@ -20,20 +19,9 @@ import {
 	TuiMainScreen,
 } from "@earendil-works/pi-tui";
 import { type Client, connect, runDisplayName, type WatchLine, watch } from "./client.ts";
-
-const HERDR_SOURCE = "custom:pi-subagent";
+import { agentReporter } from "./herdr.ts";
 
 export type AttachOptions = { readonly terminal: Terminal; readonly env: NodeJS.ProcessEnv };
-
-/**
- * Runs `herdr` with `args` and gives its output. It is undefined when `herdr` fails: a failing call never stops the
- * caller.
- */
-export function herdr(args: readonly string[], env: NodeJS.ProcessEnv): Promise<string | undefined> {
-	return new Promise((resolve) => {
-		execFile("herdr", args, { env }, (error, stdout) => resolve(error === null ? stdout : undefined));
-	});
-}
 
 /**
  * Shows the conversation of the child `handle` in `terminal` and sends what the user types to it. It starts the host
@@ -77,24 +65,7 @@ export async function attach(handle: string, options: AttachOptions): Promise<nu
 		tui.requestRender();
 	};
 
-	const label = child.name ?? child.handle;
-	const pane = env.HERDR_ENV ? env.HERDR_PANE_ID : undefined;
-	let herdrCalls: Promise<unknown> = Promise.resolve();
-	let seq = 0;
-	let reported: string | undefined;
-	// The calls run one after another, so `--seq` reaches Herdr in order.
-	const callHerdr = (command: string, options: readonly string[], resume: readonly string[]) => {
-		if (pane === undefined) return;
-		seq = Math.max(Date.now(), seq + 1);
-		const args = ["pane", command, "--source", HERDR_SOURCE, "--agent", label, ...options, "--seq", String(seq), pane];
-		herdrCalls = herdrCalls.then(() => herdr([...args, ...resume], env));
-	};
-	const report = () => {
-		const state = child.state === "busy" ? "working" : "idle";
-		if (state === reported) return;
-		reported = state;
-		callHerdr("report-agent", ["--state", state], ["--", "subagent", "attach", handle]);
-	};
+	const { report, release } = agentReporter(env, child.name ?? child.handle, handle);
 
 	const { promise: exited, resolve: exit } = Promise.withResolvers<number>();
 	let done = false;
@@ -105,8 +76,7 @@ export async function attach(handle: string, options: AttachOptions): Promise<nu
 		if (message !== undefined) terminal.write(`${message}\n`);
 		watcher.close();
 		control.close();
-		callHerdr("release-agent", [], []);
-		await herdrCalls;
+		await release();
 		exit(code);
 	};
 	const showError = (error: unknown) => {
@@ -142,7 +112,7 @@ export async function attach(handle: string, options: AttachOptions): Promise<nu
 
 	tui.start();
 	render();
-	report();
+	report(child.state === "busy");
 	watcher.listen(
 		(line: WatchLine) => {
 			if (done) return;
@@ -153,7 +123,7 @@ export async function attach(handle: string, options: AttachOptions): Promise<nu
 			view = apply(view, line.ops);
 			child = line.child;
 			render();
-			report();
+			report(child.state === "busy");
 		},
 		() => void finish(1, "The subagent host closed the connection"),
 	);
