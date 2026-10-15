@@ -109,7 +109,7 @@ Use `/subagent` in Pi to open the viewer of a child of the current session. It s
 
 `subagent attach <handle>` shows the conversation of one child in the current terminal, live, and sends what you type to it. It starts the host when none runs. An unknown handle is an error before the viewer starts.
 
-The viewer shows the user messages, the assistant text and thinking, and one line for each tool call with its state: `pending`, `running`, `done`, or `error`. The status line shows `<name> (<handle>)  <provider>/<model>  <thinking>  <state>`. The viewer uses Pi's default theme and keys, not your Pi settings.
+The viewer shows the user messages, the assistant text and thinking, and one line for each tool call with its state: `pending`, `running`, `done`, or `error`. The status line shows `<name> (<handle>)  <provider>/<model>  <thinking>  <state>`. When the child is renamed, the status line shows the new name. The viewer uses Pi's default theme and keys, not your Pi settings.
 
 | Key | Action |
 | --- | --- |

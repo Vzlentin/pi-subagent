@@ -19,7 +19,7 @@ import {
 	Text,
 	TuiMainScreen,
 } from "@earendil-works/pi-tui";
-import { type Client, connect, type Replies, runDisplayName, type WatchLine } from "./client.ts";
+import { type Client, connect, runDisplayName, type WatchLine, watch } from "./client.ts";
 
 const HERDR_SOURCE = "custom:pi-subagent";
 
@@ -42,23 +42,15 @@ export function herdr(args: readonly string[], env: NodeJS.ProcessEnv): Promise<
  */
 export async function attach(handle: string, options: AttachOptions): Promise<number> {
 	const { terminal, env } = options;
-	const watcher = await hostClient();
-	const lines: WatchLine[] = [];
-	let onWatchLine: (() => void) | undefined;
-	watcher.onLine = (line) => {
-		lines.push(JSON.parse(line) as WatchLine);
-		onWatchLine?.();
-	};
+	const watcher = await watch(handle);
 	let control: Client;
-	let watched: Replies["watch"];
 	try {
-		watched = await watcher.request({ type: "watch", handle });
 		control = await hostClient();
 	} catch (error) {
 		watcher.close();
 		throw error;
 	}
-	let { view, child } = watched;
+	let { view, child } = watcher;
 
 	initTheme();
 	const markdown = getMarkdownTheme();
@@ -148,21 +140,23 @@ export async function attach(handle: string, options: AttachOptions): Promise<nu
 		return undefined;
 	});
 
-	onWatchLine = () => {
-		for (const line of lines.splice(0)) {
+	tui.start();
+	render();
+	report();
+	watcher.listen(
+		(line: WatchLine) => {
+			if (done) return;
 			if (line.stopped) {
 				void finish(0, `${runDisplayName(child)} was stopped`);
 				return;
 			}
 			view = apply(view, line.ops);
 			child = line.child;
-		}
-		render();
-		report();
-	};
-	watcher.onEnd = () => void finish(1, "The subagent host closed the connection");
-	tui.start();
-	onWatchLine();
+			render();
+			report();
+		},
+		() => void finish(1, "The subagent host closed the connection"),
+	);
 	return exited;
 }
 

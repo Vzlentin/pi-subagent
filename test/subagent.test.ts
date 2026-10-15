@@ -23,7 +23,7 @@ import { AssistantEntry, type ConversationView, Harness } from "@earendil-works/
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { Terminal } from "@earendil-works/pi-tui";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Client, connect, type Request, request, statePaths, type WatchLine } from "../client.ts";
+import { Client, connect, type Request, request, statePaths, type WatchLine, watch } from "../client.ts";
 import subagentEntry, { subagentTool } from "../durable.ts";
 import { type Host, runHost } from "../host.ts";
 import subagentExtension from "../index.ts";
@@ -508,12 +508,13 @@ describe("subagent", { timeout: 30_000 }, () => {
 		gates.set("Task:\nWatched", Promise.withResolvers());
 		const handle = handleOf(await cli(["spawn", "--name", "watched", "--prompt", "Watched"]));
 		await until(() => called("Task:\nWatched") === 1);
-		const watcher = await connect({ start: false });
-		if (watcher === undefined) throw new Error("no host");
+		const first = await watch(handle);
 		const lines: WatchLine[] = [];
-		watcher.onLine = (line) => lines.push(JSON.parse(line) as WatchLine);
+		first.listen(
+			(line) => lines.push(line),
+			() => {},
+		);
 		try {
-			const first = await watcher.request({ type: "watch", handle });
 			expect(first.child).toMatchObject({ handle, name: "watched", state: "busy", cwd: realpathSync(root) });
 			expect(textsOf(first.view)).toEqual(["Task:\nWatched"]);
 			gates.get("Task:\nWatched")?.resolve();
@@ -531,7 +532,25 @@ describe("subagent", { timeout: 30_000 }, () => {
 				second?.close();
 			}
 		} finally {
-			watcher.close();
+			first.close();
+		}
+	});
+
+	it("sends a watch line when the child is renamed", async () => {
+		const handle = handleOf(await cli(["spawn", "--prompt", "Rename me"]));
+		await cli(["wait", handle]);
+		const watched = await watch(handle);
+		const lines: WatchLine[] = [];
+		watched.listen(
+			(line) => lines.push(line),
+			() => {},
+		);
+		try {
+			expect(watched.child.state).toBe("idle");
+			expect((await cli(["rename", handle, "renamed"])).code).toBe(0);
+			await until(() => lines.some((line) => !line.stopped && line.child.name === "renamed"));
+		} finally {
+			watched.close();
 		}
 	});
 
