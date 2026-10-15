@@ -48,8 +48,6 @@ export type Request =
 			readonly handle: string;
 			readonly message: string;
 			readonly followUp: boolean;
-			/** Set by the viewer, which may send to a child of any caller. */
-			readonly viewer?: true;
 	  }
 	| { readonly type: "wait"; readonly handle: string; readonly timeout: number }
 	| { readonly type: "status"; readonly handle: string }
@@ -75,7 +73,7 @@ export type Replies = {
 	readonly list: readonly ChildInfo[];
 	readonly rename: ChildInfo;
 	readonly stop: { readonly handle: string; readonly name?: string };
-	readonly watch: { readonly view: ConversationView; readonly child: ChildInfo };
+	readonly watch: { readonly view: ConversationView; readonly child: ChildInfo; readonly caller: string };
 	readonly abort: ChildInfo;
 };
 

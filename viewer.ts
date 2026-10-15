@@ -86,8 +86,15 @@ export async function attach(handle: string, options: AttachOptions): Promise<nu
 	const send = (message: string, followUp: boolean) => {
 		if (message.trim() === "") return;
 		editor.addToHistory(message);
-		const request = { type: "send", requestId: randomUUID(), caller: "viewer", handle, message, followUp } as const;
-		control.request({ ...request, viewer: true }).then(() => notice.setText(""), showError);
+		const request = {
+			type: "send",
+			requestId: randomUUID(),
+			caller: watcher.caller,
+			handle,
+			message,
+			followUp,
+		} as const;
+		control.request(request).then(() => notice.setText(""), showError);
 	};
 
 	editor.onSubmit = (text) => send(text, false);

@@ -390,9 +390,7 @@ async function sendChild(
 	handler: Handler,
 ): Promise<{ verb: string; child: ChildInfo }> {
 	const { harness } = handler;
-	const record = request.viewer
-		? await childRecord(harness, request.handle)
-		: await ownRecord(harness, request.handle, request.caller);
+	const record = await ownRecord(harness, request.handle, request.caller);
 	const conversation = await childConversation(harness, record);
 	const busy = await isBusy(harness, record);
 	await submitAs(harness, request.handle, record, conversation, {
@@ -536,12 +534,14 @@ async function serveWatch(harness: Harness, handle: string, socket: Socket): Pro
 	let children: DocumentWatch<ChildrenState> | undefined;
 	let watch: Awaited<ReturnType<Conversation["watch"]>> | undefined;
 	let last: ChildInfo;
+	let caller: string;
 	try {
 		// The `Children` watch opens first, so it gets each later rename and stop of the child.
 		children = await harness.watchDoc(Children, context);
 		const record = recordOf(children?.value, handle);
 		if (children === undefined || record === undefined) throw new Error(`Unknown subagent: ${handle}`);
 		last = await childInfo(harness, handle, record);
+		caller = record.caller;
 		watch = await (await childConversation(harness, record)).watch(context);
 	} catch (error) {
 		void children?.stop();
@@ -556,7 +556,7 @@ async function serveWatch(harness: Harness, handle: string, socket: Socket): Pro
 		void conversation.stop();
 		return;
 	}
-	write({ ok: true, value: { view: conversation.value, child: last } });
+	write({ ok: true, value: { view: conversation.value, child: last, caller } });
 	socket.once("close", () => {
 		void children.stop();
 		void conversation.stop();

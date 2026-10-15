@@ -498,8 +498,12 @@ describe("subagent", { timeout: 30_000 }, () => {
 		gates.get("Task:\nMine")?.resolve();
 		expect((await cli(["wait", handle], other)).stdout).toBe(`${handle} finished\n\nAnswer to Task:\nMine\n`);
 		// The viewer may send to the child of any caller.
-		const viewer = { type: "send", requestId: "viewer-send", caller: "cli", handle, message: "From viewer" } as const;
-		const sent = await request({ ...viewer, followUp: false, viewer: true }, { start: false });
+		const watcher = await watch(handle);
+		watcher.close();
+		expect(watcher.caller).toBe("other-session");
+		const caller = watcher.caller;
+		const viewer = { type: "send", requestId: "viewer-send", caller, handle, message: "From viewer" } as const;
+		const sent = await request({ ...viewer, followUp: false }, { start: false });
 		expect(sent?.verb).toBe("Prompted");
 		expect((await cli(["wait", handle], other)).stdout).toBe(`${handle} finished\n\nAnswer to From viewer\n`);
 	});
@@ -632,11 +636,11 @@ describe("subagent", { timeout: 30_000 }, () => {
 			await until(() => sent().length === 4);
 			gates.get("Busy turn")?.resolve();
 			await until(() => terminal.text().includes("Answer to Then this"));
-			expect(sent().map((r) => (r.type === "send" ? [r.message, r.followUp, r.viewer] : r.type))).toEqual([
-				["Hello there", false, true],
-				["Busy turn", false, true],
-				["Steer it", false, true],
-				["Then this", true, true],
+			expect(sent().map((r) => (r.type === "send" ? [r.message, r.followUp, r.caller] : r.type))).toEqual([
+				["Hello there", false, "cli"],
+				["Busy turn", false, "cli"],
+				["Steer it", false, "cli"],
+				["Then this", true, "cli"],
 			]);
 			expect(called("Steer it")).toBe(1);
 
