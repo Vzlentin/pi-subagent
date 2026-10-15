@@ -71,7 +71,7 @@ Use `list` at any time to rediscover the subagents of this session and their han
 
 Explicitly stop every subagent when it is no longer needed; do not leave completed subagents idle. This stops its work and removes it. Keep an idle subagent only when concrete follow-up work is expected, then stop it afterward.
 
-The interactive `/subagent` command lists the subagents spawned by the current Pi session.
+For humans, not for you: `subagent attach <handle>` and the interactive `/subagent` command open a live viewer of a subagent, where the user can read and send messages.
 
 ## CLI
 

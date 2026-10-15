@@ -4,9 +4,11 @@ import { createConnection, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Op } from "@earendil-works/chord/delta";
+import type { ConversationView } from "@earendil-works/pi-durable";
 
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 const START_TIMEOUT_MS = 10_000;
 
@@ -20,6 +22,8 @@ export type ChildInfo = {
 	readonly provider: string;
 	readonly model: string;
 	readonly thinking: string;
+	/** The child's working directory. */
+	readonly cwd: string;
 };
 
 /** One request line. The caller is `PI_SESSION_ID`, or `cli` without one. */
@@ -44,12 +48,18 @@ export type Request =
 			readonly handle: string;
 			readonly message: string;
 			readonly followUp: boolean;
+			/** Set by the viewer, which may send to a child of any caller. */
+			readonly viewer?: true;
 	  }
 	| { readonly type: "wait"; readonly handle: string; readonly timeout: number }
 	| { readonly type: "status"; readonly handle: string }
 	| { readonly type: "list"; readonly caller: string }
 	| { readonly type: "rename"; readonly caller: string; readonly handle: string; readonly name: string }
-	| { readonly type: "stop"; readonly caller: string; readonly handle: string };
+	| { readonly type: "stop"; readonly caller: string; readonly handle: string }
+	/** The viewer's stream of the child: the reply, then one `WatchLine` after each commit. */
+	| { readonly type: "watch"; readonly handle: string }
+	/** Stops the child's current turn. The viewer sends it. */
+	| { readonly type: "abort"; readonly handle: string };
 
 /** The value of the reply to each request type. */
 export type Replies = {
@@ -61,7 +71,14 @@ export type Replies = {
 	readonly list: readonly ChildInfo[];
 	readonly rename: ChildInfo;
 	readonly stop: { readonly handle: string; readonly name?: string };
+	readonly watch: { readonly view: ConversationView; readonly child: ChildInfo };
+	readonly abort: ChildInfo;
 };
+
+/** A line of a watch after its reply: the changes of one commit, or the end when the child was stopped. */
+export type WatchLine =
+	| { readonly ops: readonly Op[]; readonly child: ChildInfo; readonly stopped?: undefined }
+	| { readonly stopped: true };
 
 /** One reply line. */
 export type Reply = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };
@@ -111,6 +128,10 @@ export class Client {
 	readonly #socket: Socket;
 	readonly #pending: { resolve: (value: unknown) => void; reject: (reason: unknown) => void }[] = [];
 	#ended = false;
+	/** Gets each line that no request waits for, such as the lines of a watch. */
+	onLine: ((line: string) => void) | undefined;
+	/** Called once when the connection closes. */
+	onEnd: (() => void) | undefined;
 	/** The process ID of the host, from its `hello` reply. */
 	pid = 0;
 
@@ -118,7 +139,10 @@ export class Client {
 		this.#socket = socket;
 		onLines(socket, (line) => {
 			const waiter = this.#pending.shift();
-			if (waiter === undefined) return;
+			if (waiter === undefined) {
+				this.onLine?.(line);
+				return;
+			}
 			const reply = JSON.parse(line) as Reply;
 			if (reply.ok) waiter.resolve(reply.value);
 			else waiter.reject(new Error(reply.error));
@@ -146,6 +170,7 @@ export class Client {
 	}
 
 	#end(reason: unknown = new Error("The subagent host closed the connection")): void {
+		if (!this.#ended) this.onEnd?.();
 		this.#ended = true;
 		for (const waiter of this.#pending.splice(0)) waiter.reject(reason);
 	}

@@ -33,7 +33,7 @@ The extension gives Pi the `subagent` tool. It does what the CLI does, with one 
 | `rename` | `handle`, `name` |
 | `list` | none |
 
-`tools`, `prompts`, and `files` are arrays. A relative `cwd` or file path is relative to the caller's working directory. A caller without a working directory cannot spawn. The text result is the output of the same CLI command. The structured result is `{ action, value }`, and the tool declares its schema, where `value` is the host's reply: the child for `spawn`, `status`, and `rename`, `{ verb, child }` for `send`, `{ answer }` for `wait`, the children for `list`, and `{ handle, name }` for `stop`.
+`tools`, `prompts`, and `files` are arrays. A relative `cwd` or file path is relative to the caller's working directory. A caller without a working directory cannot spawn. The text result is the output of the same CLI command. The structured result is `{ action, value }`, and the tool declares its schema, where `value` is the host's reply: the child for `spawn`, `status`, and `rename`, `{ verb, child }` for `send`, `{ answer }` for `wait`, the children for `list`, and `{ handle, name }` for `stop`. A child is `{ handle, name, state, provider, model, thinking, cwd }`, where `cwd` is its working directory.
 
 A spawn without `provider`, `model`, or `thinking` uses the caller's. A `spawn` or `send` that comes again with the same `key` finds the first one and does not repeat it. Without `key`, the call is the key. Each caller has its own keys. When the call is aborted, for example with Esc, a `wait` stops; the child continues.
 
@@ -91,27 +91,46 @@ subagent send a1b2c3 --follow-up "Then summarize"
 subagent wait a1b2c3
 subagent stop a1b2c3
 subagent list
+subagent attach a1b2c3
 ```
 
-- `status` prints `<name> (<handle>): <state> (<provider>/<model>, <thinking>)`. The state is `busy`, `idle`, or `error` when the last turn failed.
+- `status` prints `<name> (<handle>): <state> (<provider>/<model>, <thinking>)`. The state is `busy`, `idle`, or `error` when the last turn failed. After an abort from the viewer, the state is `idle`.
 - `send` prints `Prompted`, `Steered`, or `Queued follow-up for`, then the child. A steer goes in after the current tool round. A follow-up starts after the current answer.
-- `wait` waits until the child is idle, up to `--timeout` seconds (default 1800), and prints `<handle> finished`, a blank line, and the last answer. A failed or aborted last turn is an error.
+- `wait` waits until the child is idle, up to `--timeout` seconds (default 1800), and prints `<handle> finished`, a blank line, and the last answer. A failed or aborted last turn is an error: after an abort, it prints `<handle> was aborted`.
 - `stop` stops the child's work and removes it.
 - `list` prints one line per child of the current caller: `<name> (<handle>)  <state>  <provider>/<model>  <thinking>`.
+- `attach` opens the viewer of the child in this terminal (see [Viewer](#viewer)).
 
-The caller is `PI_SESSION_ID`, or `cli` when it is not set. `list` shows only the caller's children, and `send`, `rename`, and `stop` refuse a child of another caller.
+The caller is `PI_SESSION_ID`, or `cli` when it is not set. `list` shows only the caller's children, and `send`, `rename`, and `stop` refuse a child of another caller. The viewer can show and send to the child of any caller.
 
-Use `/subagent` to list the children of the current Pi session. The status widget shows active names (or handles for unnamed runs) and their current state.
+Use `/subagent` in Pi to open the viewer of a child of the current session. It shows a select list of the children. In Herdr (`HERDR_ENV` is set), it opens a new tab with the label `<name>` (or the handle), in the child's working directory, that runs `subagent attach <handle>`. Outside Herdr, it shows `Run in another terminal: subagent attach <handle>`. When a `herdr` call fails, it shows the command too. The status widget shows active names (or handles for unnamed runs) and their current state.
+
+## Viewer
+
+`subagent attach <handle>` shows the conversation of one child in the current terminal, live, and sends what you type to it. It starts the host when none runs. An unknown handle is an error before the viewer starts.
+
+The viewer shows the user messages, the assistant text and thinking, and one line for each tool call with its state: `pending`, `running`, `done`, or `error`. The status line shows `<name> (<handle>)  <provider>/<model>  <thinking>  <state>`. The viewer uses Pi's default theme and keys, not your Pi settings.
+
+| Key | Action |
+| --- | --- |
+| Enter | Send the message: a steer when the child is busy, a new turn when it is idle |
+| Alt+Enter | Send the message as a follow-up |
+| Esc | Abort the current turn and withdraw the queued messages. The child stays, with its history, and is `idle` |
+| Ctrl+C | Exit. The child continues |
+
+Closing the viewer never changes the child. When the child is stopped, the viewer prints `<name> (<handle>) was stopped` and exits with code 0. When the host closes the connection, the viewer exits with code 1.
+
+In Herdr (`HERDR_ENV` is set), the viewer reports the agent state of its pane, `HERDR_PANE_ID`, at each change: `herdr pane report-agent --source custom:pi-subagent --agent <name or handle> --state working|idle --seq <n> <pane> -- subagent attach <handle>`. A busy child is `working`; an idle child and a child with an error are `idle`. `--seq` increases with each call. The label is the name at the start of the viewer; a rename does not change it. On exit, the viewer calls `herdr pane release-agent`. A failed `herdr` call does not stop the viewer. Herdr runs the resume command, and the new `/subagent` tab runs `subagent attach`, so the `subagent` CLI must be on `PATH` (see [Install](#install)).
 
 ## Host
 
-The children run in one host process, `subagent host`. The first command that needs it starts it in the background. It exits after 5 minutes with no connection, no running work, and no command other than `list` and `status`. The widget does not start the host, and shows nothing when no host runs.
+The children run in one host process, `subagent host`. The first command that needs it starts it in the background. It exits after 5 minutes with no connection, no running work, and no command other than `list` and `status`. An open viewer is a connection, so it keeps the host running. The widget does not start the host, and shows nothing when no host runs.
 
 The host keeps its state in `$XDG_STATE_HOME/pi-subagent/` (default `~/.local/state/pi-subagent/`):
 
 - `durable.sqlite`: the children's conversations and records. Work that a host stop interrupts continues when the host starts again.
 - `lock.sqlite`: one host at a time.
-- `host.sock`: the socket the CLI and the extension connect to.
+- `host.sock`: the socket the CLI, the viewer, and the extension connect to. The protocol has version 2. A client refuses a host with another version: stop the old host (`subagent host` process) and run the command again.
 - `host.log`: the host's output.
 
 A child's bash commands get `PI_SESSION_ID` (the child's conversation ID), `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL`, so a child can spawn its own children with the same configuration. A child of a child is the deepest level: a deeper spawn fails with `Nested subagents are disabled`. Children survive `/reload` and the end of the parent Pi session. `subagent stop` removes a child permanently.

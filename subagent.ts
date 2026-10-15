@@ -17,7 +17,8 @@ function usage(): never {
   subagent send <handle> [--follow-up] <message>
   subagent wait <handle> [--timeout <seconds>]
   subagent stop <handle>
-  subagent list`);
+  subagent list
+  subagent attach <handle>`);
 }
 
 function valueAfter(args: string[], index: number, option: string): string {
@@ -128,6 +129,15 @@ async function hostCommand(args: string[]): Promise<void> {
 	process.exit(0);
 }
 
+/** Opens the viewer of a child in this terminal. */
+async function attachCommand(args: string[]): Promise<void> {
+	const [handle] = args;
+	if (args.length !== 1 || handle === undefined) usage();
+	const { ProcessTerminal } = await import("@earendil-works/pi-tui");
+	const { attach } = await import("./viewer.ts");
+	process.exitCode = await attach(handle, { terminal: new ProcessTerminal(), env: process.env });
+}
+
 /**
  * Runs a command as a call of the `subagent` tool. The caller is `PI_SESSION_ID`, or `cli` outside Pi, and the defaults
  * of a spawn come from `PI_PROVIDER`, `PI_MODEL` and `PI_REASONING_LEVEL`.
@@ -135,6 +145,7 @@ async function hostCommand(args: string[]): Promise<void> {
 async function main(): Promise<void> {
 	const [command, ...args] = process.argv.slice(2);
 	if (command === "host") return hostCommand(args);
+	if (command === "attach") return attachCommand(args);
 	const { text } = await runTool(toolArgs(command, args), {
 		caller: process.env.PI_SESSION_ID || "cli",
 		callKey: randomUUID(),

@@ -54,6 +54,7 @@ export function toolSchemas(Type: typeof Ai.Type) {
 		provider: Type.String(),
 		model: Type.String(),
 		thinking: Type.String(),
+		cwd: Type.String(),
 	});
 	const result = <A extends string, V extends TSchema>(action: A, value: V) =>
 		Type.Object({ action: Type.Literal(action), value });
