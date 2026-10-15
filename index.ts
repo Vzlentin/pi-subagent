@@ -52,9 +52,26 @@ export default function subagentExtension(pi: ExtensionAPI) {
 				return;
 			}
 			const label = child.name ?? child.handle;
-			const created = await herdr(["tab", "create", "--cwd", child.cwd, "--label", label, "--focus"], process.env);
+			const state = process.env.XDG_STATE_HOME;
+			const created = await herdr(
+				[
+					"tab",
+					"create",
+					"--cwd",
+					child.cwd,
+					"--label",
+					label,
+					"--focus",
+					...(state ? ["--env", `XDG_STATE_HOME=${state}`] : []),
+				],
+				process.env,
+			);
 			const pane = paneOf(created);
-			if (pane === undefined || (await herdr(["pane", "run", pane, command], process.env)) === undefined) {
+			// The tab's shell may not have the CLI on PATH, so run this package's subagent.ts with this Node.
+			const viewer = `${[process.execPath, join(packageDir, "subagent.ts")]
+				.map((path) => `'${path.replaceAll("'", "'\\''")}'`)
+				.join(" ")} attach ${child.handle}`;
+			if (pane === undefined || (await herdr(["pane", "run", pane, viewer], process.env)) === undefined) {
 				ctx.ui.notify(`Could not open a Herdr tab. Run in another terminal: ${command}`, "error");
 			}
 		},

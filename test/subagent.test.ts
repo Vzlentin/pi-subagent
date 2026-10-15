@@ -31,6 +31,12 @@ import { attach } from "../viewer.ts";
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "subagent.ts");
 
+// The in-process client finds the host under the test's HOME, not the user's home, when XDG_STATE_HOME is not set.
+vi.mock("node:os", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:os")>()),
+	homedir: () => process.env.HOME ?? "",
+}));
+
 /** One model request: what the faux provider saw. */
 type Call = {
 	readonly provider: string;
@@ -659,16 +665,25 @@ describe("subagent", { timeout: 30_000 }, () => {
 		const saved = process.env;
 		try {
 			process.env = { ...herdr.env, HERDR_ENV: "1" };
+			const state = process.env.XDG_STATE_HOME;
+			expect(state).toBeTruthy();
+			const run = `pane run p1 '${process.execPath}' '${CLI}' attach ${handle}`;
 			await command.handler("", ctx);
 			expect(logLines(herdr.log)).toEqual([
-				`tab create --cwd ${root} --label tabbed --focus`,
-				`pane run p1 subagent attach ${handle}`,
+				`tab create --cwd ${root} --label tabbed --focus --env XDG_STATE_HOME=${state}`,
+				run,
 			]);
 			expect(notes).toEqual([]);
+			// Without XDG_STATE_HOME, the host directory is under HOME: link it to the same host.
+			await mkdir(join(root, "home", ".local"), { recursive: true });
+			await symlink(state as string, join(root, "home", ".local", "state"));
+			delete process.env.XDG_STATE_HOME;
+			await command.handler("", ctx);
+			expect(logLines(herdr.log).slice(2)).toEqual([`tab create --cwd ${root} --label tabbed --focus`, run]);
 			process.env = { ...herdr.env };
 			delete process.env.HERDR_ENV;
 			await command.handler("", ctx);
-			expect(logLines(herdr.log)).toHaveLength(2);
+			expect(logLines(herdr.log)).toHaveLength(4);
 			expect(notes).toEqual([`Run in another terminal: subagent attach ${handle}`]);
 		} finally {
 			process.env = saved;
