@@ -101,7 +101,7 @@ subagent attach a1b2c3
 - `list` prints one line per child of the current caller: `<name> (<handle>)  <state>  <provider>/<model>  <thinking>`.
 - `attach` opens the viewer of the child in this terminal (see [Viewer](#viewer)).
 
-The caller is `PI_SESSION_ID`, or `cli` when it is not set. `list` shows only the caller's children, and `send`, `rename`, and `stop` refuse a child of another caller. The viewer can show and send to the child of any caller.
+The caller is `PI_SESSION_ID`, or `cli` when it is not set. `list` shows only the caller's children. The CLI and the tool refuse to `send` to, `rename`, or `stop` a child of another caller. The viewer does not check the caller, because the host socket is for one user: it can show, send to, and abort the child of any caller.
 
 Use `/subagent` in Pi to open the viewer of a child of the current session. It shows a select list of the children. In Herdr (`HERDR_ENV` is set), it opens a new tab with the label `<name>` (or the handle), in the child's working directory, that runs the viewer of the child. The tab runs the viewer with Node and this package's `subagent.ts`, so it does not need `subagent` on `PATH`. When `XDG_STATE_HOME` is set, the tab gets it too. Outside Herdr, it shows `Run in another terminal: subagent attach <handle>`. When a `herdr` call fails, it shows the command too. The status widget shows active names (or handles for unnamed runs) and their current state.
 
@@ -115,7 +115,7 @@ The viewer shows the user messages, the assistant text and thinking, and one lin
 | --- | --- |
 | Enter | Send the message: a steer when the child is busy, a new turn when it is idle |
 | Alt+Enter | Send the message as a follow-up |
-| Esc | Abort the current turn and withdraw the queued messages. The child stays, with its history, and is `idle` |
+| Esc | Abort the current turn and withdraw the queued messages. The child stays, with its history, and is `idle`. Does nothing when the child is idle. |
 | Ctrl+C | Exit. The child continues |
 
 Closing the viewer never changes the child. When the child is stopped, the viewer prints `<name> (<handle>) was stopped` and exits with code 0. When the host closes the connection, the viewer exits with code 1.

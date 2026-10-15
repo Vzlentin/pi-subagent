@@ -56,7 +56,10 @@ export type Request =
 	| { readonly type: "list"; readonly caller: string }
 	| { readonly type: "rename"; readonly caller: string; readonly handle: string; readonly name: string }
 	| { readonly type: "stop"; readonly caller: string; readonly handle: string }
-	/** The viewer's stream of the child: the reply, then one `WatchLine` after each commit. */
+	/**
+	 * The viewer's stream of the child: the reply, then one `WatchLine` after each commit. Do not send requests on a
+	 * watch connection; the host closes the connection.
+	 */
 	| { readonly type: "watch"; readonly handle: string }
 	/** Stops the child's current turn. The viewer sends it. */
 	| { readonly type: "abort"; readonly handle: string };
@@ -128,7 +131,10 @@ export class Client {
 	readonly #socket: Socket;
 	readonly #pending: { resolve: (value: unknown) => void; reject: (reason: unknown) => void }[] = [];
 	#ended = false;
-	/** Gets each line that no request waits for, such as the lines of a watch. */
+	/**
+	 * Gets each line that no request waits for, such as the lines of a watch. Do not send requests on a watch
+	 * connection; the host closes the connection.
+	 */
 	onLine: ((line: string) => void) | undefined;
 	/** Called once when the connection closes. */
 	onEnd: (() => void) | undefined;

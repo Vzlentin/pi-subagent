@@ -32,6 +32,7 @@ import {
 	Harness,
 	type HarnessSettings,
 	LiveDoc,
+	type LiveState,
 	type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
@@ -191,7 +192,10 @@ export async function runHost(options: {
 		let watching = false;
 		onLines(socket, (line) => {
 			queue = queue.then(async () => {
-				if (watching) return;
+				if (watching) {
+					socket.destroy();
+					return;
+				}
 				let reply: Reply;
 				let start: (() => void) | undefined;
 				try {
@@ -531,7 +535,8 @@ type Watches = Map<string, Set<() => void>>;
  * Opens a watch of `handle` for the connection `socket`. The reply value is the view and the child. After the reply,
  * `start()` writes one `WatchLine` after each commit, and waits for a slow socket to drain, so pi-durable replaces
  * the frames it holds back with one frame of the whole view. The watch stops when the socket closes; a wait for
- * `drain` then stays on the closed socket and goes with it.
+ * `drain` then stays on the closed socket and goes with it. When the child stops, the viewer gets a `stopped` line;
+ * when the watch ends for another reason, the connection ends.
  */
 async function watchChild(
 	harness: Harness,
@@ -540,29 +545,50 @@ async function watchChild(
 	watches: Watches,
 ): Promise<{ value: Replies["watch"]; start: () => void }> {
 	const record = await childRecord(harness, handle);
-	const child = await childInfo(harness, handle, record);
+	let last = await childInfo(harness, handle, record);
 	const watch = await (await childConversation(harness, record)).watch(context);
+	const value = { view: watch.value, child: last };
 	const write = (line: WatchLine) => socket.write(`${JSON.stringify(line)}\n`);
 	const stopped = () => {
+		if (socket.writableEnded || socket.destroyed) return;
 		write({ stopped: true });
 		socket.end();
 	};
-	const open = watches.get(handle) ?? new Set();
-	watches.set(handle, open.add(stopped));
-	socket.once("close", () => {
-		void watch.stop();
-		open.delete(stopped);
-		if (open.size === 0 && watches.get(handle) === open) watches.delete(handle);
-	});
-	if (socket.destroyed) void watch.stop();
-	const value = { view: watch.value, child };
-	const start = () =>
-		watch.start(async (_value, ops) => {
-			// A stopped child has no record; its `stopped` line follows.
-			const current = await childInfo(harness, handle).catch(() => undefined);
-			if (current === undefined || socket.destroyed) return;
-			if (!write({ ops, child: current })) await once(socket, "drain").catch(() => {});
+	const start = () => {
+		// A socket that closed before the reply never emits `close` again.
+		if (socket.destroyed) {
+			void watch.stop();
+			return;
+		}
+		const open = watches.get(handle) ?? new Set();
+		watches.set(handle, open.add(stopped));
+		socket.once("close", () => {
+			void watch.stop();
+			open.delete(stopped);
+			if (open.size === 0 && watches.get(handle) === open) watches.delete(handle);
 		});
+		// The child can stop before `stopped` is in `watches`.
+		void childRecord(harness, handle).catch(stopped);
+		void watch.closed.then(() => childRecord(harness, handle).then(() => socket.end(), stopped)).catch(() => {});
+		watch.start(async (view, ops) => {
+			// Each commit costs one `Children` read for each watcher. A rename push from the `rename` handler would
+			// remove it. A stopped child has no record; its `stopped` line follows.
+			const current = await childRecord(harness, handle).catch(() => undefined);
+			if (current === undefined || socket.destroyed) return;
+			const busy = (view.docs["pi.live"] as LiveState | undefined)?.run !== undefined;
+			// Streaming commits change only `docs/pi.live`, and need no new info while the turn runs.
+			const changed =
+				current.name !== last.name ||
+				busy !== (last.state === "busy") ||
+				ops.some((op) => op[0] === "r" || op[1][0] !== "docs" || op[1][1] !== "pi.live");
+			if (changed) {
+				const info = await childInfo(harness, handle, current).catch(() => undefined);
+				if (info === undefined || socket.destroyed) return;
+				last = info;
+			}
+			if (!write({ ops, child: last })) await once(socket, "drain").catch(() => {});
+		});
+	};
 	return { value, start };
 }
 

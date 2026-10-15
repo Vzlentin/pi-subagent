@@ -535,6 +535,22 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 
+	it("closes a watch connection that gets another request", async () => {
+		const handle = handleOf(await cli(["spawn", "--prompt", "Idle"]));
+		await cli(["wait", handle]);
+		const watcher = await connect({ start: false });
+		if (watcher === undefined) throw new Error("no host");
+		try {
+			// The child is idle, so no watch line comes before the close.
+			expect((await watcher.request({ type: "watch", handle })).child.state).toBe("idle");
+			await expect(watcher.request({ type: "status", handle })).rejects.toThrow(
+				"The subagent host closed the connection",
+			);
+		} finally {
+			watcher.close();
+		}
+	});
+
 	it("aborts a busy child, which keeps its history and answers later", async () => {
 		gates.set("Task:\nAbort me", Promise.withResolvers());
 		const handle = handleOf(await cli(["spawn", "--prompt", "Abort me"]));
@@ -605,6 +621,11 @@ describe("subagent", { timeout: 30_000 }, () => {
 			]);
 			expect(called("Steer it")).toBe(1);
 
+			// Esc on an idle child sends nothing.
+			await until(() => terminal.text().lastIndexOf("medium  idle") > terminal.text().lastIndexOf("medium  busy"));
+			terminal.input("\u001b");
+			expect(sent()).toHaveLength(4);
+
 			// Esc aborts the turn and leaves the child idle.
 			gates.set("Long turn", Promise.withResolvers());
 			terminal.input("Long turn");
@@ -612,6 +633,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 			await until(() => called("Long turn") === 1);
 			terminal.input("\u001b");
 			await until(() => sent().at(-1)?.type === "abort");
+			expect(sent().filter((r) => r.type === "abort")).toHaveLength(1);
 			await until(() => terminal.text().lastIndexOf("medium  idle") > terminal.text().lastIndexOf("medium  busy"));
 			expect((await cli(["status", handle])).stdout).toBe(`viewed (${handle}): idle (faux/faux-1, medium)\n`);
 

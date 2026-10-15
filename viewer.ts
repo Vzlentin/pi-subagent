@@ -135,7 +135,8 @@ export async function attach(handle: string, options: AttachOptions): Promise<nu
 			return { consume: true };
 		}
 		if (matchesKey(data, "escape")) {
-			control.request({ type: "abort", handle }).then(() => notice.setText(""), showError);
+			// An idle child has no turn to abort.
+			if (child.state === "busy") control.request({ type: "abort", handle }).then(() => notice.setText(""), showError);
 			return { consume: true };
 		}
 		if (matchesKey(data, "alt+enter")) {
