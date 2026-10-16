@@ -10,7 +10,7 @@ import { runTool, sendToHost, TOOL_DESCRIPTION, toolSchemas } from "./tool.ts";
 const packageDir = dirname(fileURLToPath(import.meta.url));
 
 export const SESSION_TRUST_HINT =
-	"The child gets no project skills: this session trusts the project for itself only. Run /trust to save the decision.";
+	"The child gets no project skills (.pi/skills, .agents/skills): this project is trusted for this Pi session only, and children see only the trust saved for future sessions. To give children project skills, run /trust and choose Trust.";
 
 export default function subagentExtension(pi: ExtensionAPI) {
 	pi.on("resources_discover", () => ({ skillPaths: [join(packageDir, "skills")] }));
