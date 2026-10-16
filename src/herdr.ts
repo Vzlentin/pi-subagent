@@ -1,21 +1,32 @@
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import type { ChildInfo } from "./protocol.ts";
+import { type ChildInfo, childLabel } from "./protocol.ts";
 
 const HERDR_SOURCE = "custom:pi-subagent";
 
 /**
- * Runs `herdr` with `args` and gives its output. It is undefined when `herdr` fails: a failing call never stops the
- * caller.
+ * The words of the command that runs the viewer of `handle`, with this Node and this package's cli.ts, so it does not
+ * need the CLI on PATH. Herdr wants a plain command name as the first word of a resume command, so it starts with `env`.
  */
-export function herdr(args: readonly string[], env: NodeJS.ProcessEnv): Promise<string | undefined> {
-	return new Promise((resolve) => {
-		execFile("herdr", args, { env }, (error, stdout) => resolve(error === null ? stdout : undefined));
+export function viewerCommand(handle: string): string[] {
+	return ["env", process.execPath, fileURLToPath(new URL("./cli.ts", import.meta.url)), "attach", handle];
+}
+
+/**
+ * Runs `herdr` with `args` and gives its output. When `herdr` fails, it rejects with the stderr of `herdr`, or with the
+ * error of `execFile` when stderr is empty.
+ */
+export function herdr(args: readonly string[], env: NodeJS.ProcessEnv): Promise<string> {
+	return new Promise((resolve, reject) => {
+		execFile("herdr", args, { env }, (error, stdout, stderr) => {
+			if (error) reject(new Error(stderr.trim() || error.message));
+			else resolve(stdout);
+		});
 	});
 }
 
-/** Opens a Herdr tab that runs the viewer of `child`. It resolves with false when a `herdr` call fails. */
-export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): Promise<boolean> {
+/** Opens a Herdr tab that runs the viewer of `child`. It rejects when a `herdr` call fails or gives no pane ID. */
+export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): Promise<void> {
 	// The tab must find the same host as `statePaths()` in protocol.ts.
 	const state = env.XDG_STATE_HOME;
 	const created = await herdr(
@@ -25,7 +36,7 @@ export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): P
 			"--cwd",
 			child.cwd,
 			"--label",
-			child.name ?? child.handle,
+			childLabel(child),
 			"--focus",
 			...(state ? ["--env", `XDG_STATE_HOME=${state}`] : []),
 		],
@@ -33,16 +44,15 @@ export async function openViewerTab(child: ChildInfo, env: NodeJS.ProcessEnv): P
 	);
 	let pane: unknown;
 	try {
-		pane = (JSON.parse(created ?? "") as { result?: { root_pane?: { pane_id?: unknown } } }).result?.root_pane?.pane_id;
+		pane = (JSON.parse(created) as { result?: { root_pane?: { pane_id?: unknown } } }).result?.root_pane?.pane_id;
 	} catch {
-		return false;
+		pane = undefined;
 	}
-	if (typeof pane !== "string") return false;
-	// The tab's shell may not have the CLI on PATH, so run this package's cli.ts with this Node.
-	const viewer = `${[process.execPath, fileURLToPath(new URL("./cli.ts", import.meta.url))]
-		.map((path) => `'${path.replaceAll("'", "'\\''")}'`)
-		.join(" ")} attach ${child.handle}`;
-	return (await herdr(["pane", "run", pane, viewer], env)) !== undefined;
+	if (typeof pane !== "string") throw new Error(`herdr tab create gave no pane ID: ${created.trim()}`);
+	const viewer = viewerCommand(child.handle)
+		.map((word) => `'${word.replaceAll("'", "'\\''")}'`)
+		.join(" ");
+	await herdr(["pane", "run", pane, viewer], env);
 }
 
 /**
@@ -62,14 +72,15 @@ export function agentReporter(
 		if (pane === undefined) return;
 		seq = Math.max(Date.now(), seq + 1);
 		const args = ["pane", command, "--source", HERDR_SOURCE, "--agent", label, ...options, "--seq", String(seq), pane];
-		calls = calls.then(() => herdr([...args, ...resume], env));
+		// A failed report never stops the caller.
+		calls = calls.then(() => herdr([...args, ...resume], env)).catch(() => {});
 	};
 	return {
 		report(busy) {
 			const state = busy ? "working" : "idle";
 			if (state === reported) return;
 			reported = state;
-			call("report-agent", ["--state", state], ["--", "subagent", "attach", handle]);
+			call("report-agent", ["--state", state], ["--", ...viewerCommand(handle)]);
 		},
 		async release() {
 			call("release-agent", [], []);

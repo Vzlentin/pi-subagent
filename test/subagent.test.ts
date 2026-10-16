@@ -9,9 +9,9 @@ import * as durable from "@earendil-works/pi-durable";
 import { AssistantEntry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { connect, request, watch } from "../src/client.ts";
+import { connect, request } from "../src/client.ts";
 import subagentEntry from "../src/durable-entry.ts";
-import type { Host } from "../src/host.ts";
+import { type Host, runHost } from "../src/host.ts";
 import { SESSION_TRUST_HINT } from "../src/pi-extension.ts";
 import { subagentTool } from "../src/tool.ts";
 import {
@@ -24,7 +24,7 @@ import {
 	handleOf,
 	models,
 	piContext,
-	piTool,
+	piExtension,
 	requests,
 	root,
 	setUp,
@@ -170,13 +170,13 @@ describe("subagent", { timeout: 30_000 }, () => {
 		// A Pi session that trusts its project for itself only is told what its child misses.
 		const sessionOnly = piContext("faux-1", { cwd: project, trusted: true });
 		const spawn = { action: "spawn", prompts: ["Session trust"] };
-		expect((await callPi(piTool("medium"), sessionOnly, spawn)).text).toContain(`\n${SESSION_TRUST_HINT}\n`);
+		expect((await callPi(piExtension().tool, sessionOnly, spawn)).text).toContain(`\n${SESSION_TRUST_HINT}\n`);
 
 		// Once `/trust` saves the decision, the next request loads the project skill, and the session is told nothing.
 		new ProjectTrustStore(join(root, "agent")).set(project, true);
 		await cli(["wait", handleOf(await cli(["spawn", "--cwd", project, "--prompt", "Trusted context"]))]);
 		expect(requests.get("Task:\nTrusted context")?.system).toContain("<name>local</name>");
-		expect((await callPi(piTool("medium"), sessionOnly, spawn)).text).not.toContain(SESSION_TRUST_HINT);
+		expect((await callPi(piExtension().tool, sessionOnly, spawn)).text).not.toContain(SESSION_TRUST_HINT);
 
 		// A child without `read` loads skills with bash.
 		await cli(["wait", handleOf(await cli(["spawn", "--cwd", project, "--tools", "bash", "--prompt", "Bash only"]))]);
@@ -252,11 +252,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		gates.get("Task:\nMine")?.resolve();
 		expect((await cli(["wait", handle], other)).stdout).toBe(`${handle} finished\n\nAnswer to Task:\nMine\n`);
 		// The viewer may send to the child of any caller.
-		const watcher = await watch(handle);
-		watcher.close();
-		expect(watcher.caller).toBe("other-session");
-		const caller = watcher.caller;
-		const viewer = { type: "send", requestId: "viewer-send", caller, handle, message: "From viewer" } as const;
+		const viewer = { type: "input", requestId: "viewer-input", handle, message: "From viewer" } as const;
 		const sent = await request({ ...viewer, followUp: false }, { start: false });
 		expect(sent?.verb).toBe("Prompted");
 		expect((await cli(["wait", handle], other)).stdout).toBe(`${handle} finished\n\nAnswer to From viewer\n`);
@@ -270,6 +266,14 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(called("Task:\nNest")).toBe(2);
 		// The nested child belongs to its parent, not to this caller.
 		expect((await cli(["list"])).stdout).not.toContain("nested");
+	});
+
+	it("stops the children that a child spawned with it", async () => {
+		const handle = handleOf(await cli(["spawn", "--prompt", "Nest"]));
+		const nested = /Spawned nested \(([a-z0-9]+)\)/.exec((await cli(["wait", handle])).stdout)?.[1] ?? "";
+		expect((await cli(["status", nested])).stdout).toContain(`nested (${nested})`);
+		expect((await cli(["stop", handle])).stdout).toBe(`Stopped ${handle}\n`);
+		expect((await cli(["status", nested])).stderr).toBe(`Unknown subagent: ${nested}\n`);
 	});
 
 	it("lets a child spawn a child with the tool, but not a third level", async () => {
@@ -312,7 +316,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("runs the Pi tool with the caller's session, model and thinking level", async () => {
-		const tool = piTool("low");
+		const tool = piExtension("low").tool;
 		const ctx = piContext("faux-2");
 		const spawned = await callPi(tool, ctx, { action: "spawn", name: "pi", prompts: ["From Pi"] });
 		const handle = (spawned.data as { value: { handle: string } }).value.handle;
@@ -345,7 +349,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 	});
 
 	it("stops a Pi tool wait on abort and leaves the child busy", async () => {
-		const tool = piTool("medium");
+		const tool = piExtension().tool;
 		const ctx = piContext("faux-1");
 		gates.set("Task:\nPi gated", Promise.withResolvers());
 		const spawned = await callPi(tool, ctx, { action: "spawn", prompts: ["Pi gated"] });
@@ -513,6 +517,27 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(called("Newer")).toBe(1);
 	});
 
+	it("refuses a socket spawn without a working directory before it creates a child", async () => {
+		const client = await connect({ start: false });
+		if (client === undefined) throw new Error("no host");
+		const caller = "cli-no-cwd";
+		try {
+			const spawn = {
+				type: "spawn",
+				requestId: "spawn-no-cwd",
+				caller,
+				provider: "faux",
+				model: "faux-1",
+				thinking: "medium",
+				prompt: "Nowhere",
+			} as unknown as Parameters<typeof client.request<"spawn">>[0];
+			await expect(client.request(spawn)).rejects.toThrow("spawn requires a working directory");
+			expect(await client.request({ type: "list", caller })).toEqual([]);
+		} finally {
+			client.close();
+		}
+	});
+
 	it("keeps the prompt of a spawn that stopped before its submit, also after a send", async () => {
 		await host?.close();
 		const open = Harness.open.bind(Harness);
@@ -584,6 +609,20 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(called("Task:\nSurvive")).toBe(2);
 	});
 
+	it("refuses a store from before the children library", async () => {
+		const stateDir = await childrenStore("old-state", 1);
+		await expect(runHost({ stateDir, models })).rejects.toThrow(
+			`${join(stateDir, "durable.sqlite")} was written by an older pi-subagent`,
+		);
+	});
+
+	it("does not take a store from a newer pi-subagent for an old one", async () => {
+		const stateDir = await childrenStore("new-state", 3);
+		const refusal = runHost({ stateDir, models });
+		await expect(refusal).rejects.toThrow("(subagent.children) has newer version 3 than 2");
+		await expect(refusal).rejects.not.toThrow("older pi-subagent");
+	});
+
 	it("starts one host for two clients", async () => {
 		const state = join(root, "state2");
 		process.env.XDG_STATE_HOME = state;
@@ -626,3 +665,25 @@ describe("subagent", { timeout: 30_000 }, () => {
 		}
 	});
 });
+
+/** A state directory whose store has a `subagent.children` document at `version`, as another pi-subagent writes it. */
+async function childrenStore(name: string, version: number): Promise<string> {
+	const stateDir = join(root, name);
+	await mkdir(stateDir);
+	const Children = durable.defineDoc<{ children: Record<string, string>; requests: Record<string, string> }>({
+		kind: "subagent.children",
+		version,
+		scope: "session",
+		initial: () => ({ children: {}, requests: {} }),
+	});
+	const store = await Harness.open(
+		await openNodeSqliteStorage(join(stateDir, "durable.sqlite")),
+		{ models, registry: durable.createRegistry() },
+		BACKGROUND_CONTEXT,
+	);
+	await store.commit(async (tx) => {
+		(await tx.doc(Children)).requests.other = "abcdef";
+	}, BACKGROUND_CONTEXT);
+	await store.close(BACKGROUND_CONTEXT);
+	return stateDir;
+}

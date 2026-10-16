@@ -5,7 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { request } from "./client.ts";
 import { savedTrust } from "./context.ts";
 import { openViewerTab } from "./herdr.ts";
-import { childLine } from "./protocol.ts";
+import { childLine, runDisplayName } from "./protocol.ts";
 import { runTool, sendToHost, TOOL_DESCRIPTION, toolSchemas } from "./tool.ts";
 
 const packageDir = dirname(fileURLToPath(import.meta.url));
@@ -54,17 +54,22 @@ export default function subagentExtension(pi: ExtensionAPI) {
 				ctx.ui.notify("No subagents spawned by this session", "info");
 				return;
 			}
-			const lines = children.map(childLine);
-			const chosen = await ctx.ui.select("Attach to subagent", lines);
-			const child = chosen === undefined ? undefined : children[lines.indexOf(chosen)];
+			const chosen = await ctx.ui.select("Attach to subagent", children.map(childLine));
+			// A name can start with the display name of another child, so the longest match is the chosen child.
+			const child = children
+				.filter((c) => chosen?.startsWith(`${runDisplayName(c)}  `))
+				.sort((a, b) => runDisplayName(b).length - runDisplayName(a).length)[0];
 			if (child === undefined) return;
 			const command = `subagent attach ${child.handle}`;
 			if (!process.env.HERDR_ENV) {
 				ctx.ui.notify(`Run in another terminal: ${command}`, "info");
 				return;
 			}
-			if (!(await openViewerTab(child, process.env))) {
-				ctx.ui.notify(`Could not open a Herdr tab. Run in another terminal: ${command}`, "error");
+			try {
+				await openViewerTab(child, process.env);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(`Could not open a Herdr tab: ${message}. Run in another terminal: ${command}`, "error");
 			}
 		},
 	});

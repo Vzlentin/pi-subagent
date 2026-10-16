@@ -11,7 +11,12 @@ import {
 } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionToolContext,
+	RegisteredCommand,
+	ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import { type Host, runHost } from "../src/host.ts";
 import subagentExtension from "../src/pi-extension.ts";
 import { statePaths } from "../src/protocol.ts";
@@ -166,19 +171,25 @@ export function called(prompt: string): number {
 	return calls.filter((call) => call.prompt === prompt).length;
 }
 
-/** The `subagent` tool that the Pi extension registers, with `thinking` as Pi's thinking level. */
-export function piTool(thinking: string): ToolDefinition {
+/**
+ * The `subagent` tool and the `/subagent` command that the Pi extension registers, with `thinking` as Pi's thinking
+ * level.
+ */
+export function piExtension(thinking = "medium") {
 	const tools: ToolDefinition[] = [];
+	const commands: Omit<RegisteredCommand, "name" | "sourceInfo">[] = [];
 	const pi = {
 		on: () => {},
-		registerCommand: () => {},
+		registerCommand: (_name: string, command: Omit<RegisteredCommand, "name" | "sourceInfo">) => commands.push(command),
 		registerTool: (tool: ToolDefinition) => tools.push(tool),
 		getThinkingLevel: () => thinking,
 	};
 	subagentExtension(pi as unknown as ExtensionAPI);
 	const [tool] = tools;
+	const [command] = commands;
 	if (tool === undefined) throw new Error("no tool");
-	return tool;
+	if (command === undefined) throw new Error("no command");
+	return { tool, command };
 }
 
 /**

@@ -18,7 +18,7 @@ pi install https://github.com/Vzlentin/pi-subagent
 ln -s ~/.pi/agent/git/github.com/Vzlentin/pi-subagent/src/cli.ts ~/.local/bin/subagent
 ```
 
-Run `/reload` in an existing Pi session. The extension contributes the `subagent` tool and its bundled skill. The tool does not need the CLI on `PATH`; the CLI is for shells and scripts.
+Run `/reload` in an existing Pi session. The extension contributes the `subagent` tool and its bundled skill. The tool, the Herdr viewer tab, and the Herdr resume command do not need the CLI on `PATH`; the CLI is for shells and scripts.
 
 ## Tool
 
@@ -96,14 +96,14 @@ subagent attach a1b2c3
 
 - `status` prints `<name> (<handle>): <state> (<provider>/<model>, <thinking>)`. The state is `busy`, `idle`, or `error` when the last turn failed. After an abort from the viewer, the state is `idle`.
 - `send` prints `Prompted`, `Steered`, or `Queued follow-up for`, then the child. A steer goes in after the current tool round. A follow-up starts after the current answer.
-- `wait` waits until the child is idle, up to `--timeout` seconds (default 1800), and prints `<handle> finished`, a blank line, and the last answer. A failed or aborted last turn is an error: after an abort, it prints `<handle> was aborted`.
-- `stop` stops the child's work and removes it.
+- `wait` waits until the child answers its last message, up to `--timeout` seconds (default 1800), and prints `<handle> finished`, a blank line, and the answer. A failed or aborted last turn is an error: after an abort, it prints `<handle> was aborted`.
+- `stop` stops the work of the child and of the children it spawned, and removes them.
 - `list` prints one line per child of the current caller: `<name> (<handle>)  <state>  <provider>/<model>  <thinking>`.
 - `attach` opens the viewer of the child in this terminal (see [Viewer](#viewer)).
 
-The caller is `PI_SESSION_ID`, or `cli` when it is not set. `list` shows only the caller's children. The CLI and the tool refuse to `send` to, `rename`, or `stop` a child of another caller. The viewer does not check the caller, because the host socket is for one user: it can show, send to, and abort the child of any caller.
+The caller is `PI_SESSION_ID`, or `cli` when it is not set. `list` shows only the caller's children. The CLI and the tool refuse to `send` to, `rename`, or `stop` a child of another caller. The viewer does not check the caller, because the host socket is for one user: it can show, send to, and abort the child of any caller. The viewer sends text with an `input` request and stops a turn with an `abort` request. Neither request has a caller.
 
-Use `/subagent` in Pi to open the viewer of a child of the current session. It shows a select list of the children. In Herdr (`HERDR_ENV` is set), it opens a new tab with the label `<name>` (or the handle), in the child's working directory, that runs the viewer of the child. The tab runs the viewer with Node and this package's `src/cli.ts`, so it does not need `subagent` on `PATH`. When `XDG_STATE_HOME` is set, the tab gets it too. Outside Herdr, it shows `Run in another terminal: subagent attach <handle>`. When a `herdr` call fails, it shows the command too. The status widget shows active names (or handles for unnamed runs) and their current state.
+Use `/subagent` in Pi to open the viewer of a child of the current session. It shows a select list of the children. In Herdr (`HERDR_ENV` is set), it opens a new tab with the label `<name>` (or the handle), in the child's working directory, that runs the viewer of the child. The tab runs `env <node> <pkg>/src/cli.ts attach <handle>`: the viewer with this Node and this package's `src/cli.ts`, so it does not need `subagent` on `PATH`. When `XDG_STATE_HOME` is set, the tab gets it too. Outside Herdr, it shows `Run in another terminal: subagent attach <handle>`. When a `herdr` call fails, it shows `Could not open a Herdr tab: <error>. Run in another terminal: subagent attach <handle>`, where `<error>` is what went wrong: the stderr of `herdr`, or the reason that the call failed. The status widget shows active names (or handles for unnamed runs) and their current state.
 
 ## Viewer
 
@@ -120,7 +120,7 @@ The viewer shows the user messages, the assistant text and thinking, and one lin
 
 Closing the viewer never changes the child. When the child is stopped, the viewer prints `<name> (<handle>) was stopped` and exits with code 0. When the host closes the connection, the viewer exits with code 1.
 
-In Herdr (`HERDR_ENV` is set), the viewer reports the agent state of its pane, `HERDR_PANE_ID`, at each change: `herdr pane report-agent --source custom:pi-subagent --agent <name or handle> --state working|idle --seq <n> <pane> -- subagent attach <handle>`. A busy child is `working`; an idle child and a child with an error are `idle`. `--seq` increases with each call. The label is the name at the start of the viewer; a rename does not change it. On exit, the viewer calls `herdr pane release-agent`. A failed `herdr` call does not stop the viewer. Herdr runs the resume command in a shell, so the `subagent` CLI must be on that shell's `PATH` (see [Install](#install)).
+In Herdr (`HERDR_ENV` is set), the viewer reports the agent state of its pane, `HERDR_PANE_ID`, at each change: `herdr pane report-agent --source custom:pi-subagent --agent <name or handle> --state working|idle --seq <n> <pane> -- env <node> <pkg>/src/cli.ts attach <handle>`. The resume command is the same command that the `/subagent` tab runs. A busy child is `working`; an idle child and a child with an error are `idle`. `--seq` increases with each call. The label is the name at the start of the viewer; a rename does not change it. On exit, the viewer calls `herdr pane release-agent`. A failed `herdr` call does not stop the viewer.
 
 ## Host
 
@@ -128,12 +128,12 @@ The children run in one host process, `subagent host`. The first command that ne
 
 The host keeps its state in `$XDG_STATE_HOME/pi-subagent/` (default `~/.local/state/pi-subagent/`):
 
-- `durable.sqlite`: the children's conversations and records. Work that a host stop interrupts continues when the host starts again.
+- `durable.sqlite`: the children's conversations and records. Work that a host stop interrupts continues when the host starts again. A host refuses a `durable.sqlite` from a version before the children library: stop the old host, remove the file and run the command again.
 - `lock.sqlite`: one host at a time.
-- `host.sock`: the socket the CLI, the viewer, and the extension connect to. The protocol has version 2. A client refuses a host with another version: stop the old host (`subagent host` process) and run the command again.
+- `host.sock`: the socket the CLI, the viewer, and the extension connect to. The protocol has version 3. The `watch` reply is `{ view, child }`. After a `watch` reply, each event of the watch is a `{ "event": ... }` line, and every other line is a reply, in request order. A client refuses a host with another version: stop the old host (`subagent host` process) and run the command again.
 - `host.log`: the host's output.
 
-A child's bash commands get `PI_SESSION_ID` (the child's conversation ID), `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL`, so a child can spawn its own children with the same configuration. A child of a child is the deepest level: a deeper spawn fails with `Nested subagents are disabled`. Children survive `/reload` and the end of the parent Pi session. `subagent stop` removes a child permanently.
+A child's bash commands get `PI_SESSION_ID` (the child's conversation ID), `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL`, so a child can spawn its own children with the same configuration. A child of a child is the deepest level: a deeper spawn fails with `Nested subagents are disabled`. Children survive `/reload` and the end of the parent Pi session. `subagent stop` removes a child and the children it spawned permanently.
 
 A child's system prompt has what a Pi session in the child's working directory gets: the `AGENTS.md` or `CLAUDE.md` of the agent directory and of the working directory and its parents, the skills, and the working directory. User skills always load. Project skills (`.pi/skills`, and `.agents/skills` in the working directory and its parents) load only for a trusted project: a directory without project resources, then the decision saved with `/trust`, then the `defaultProjectTrust` setting, where `ask` counts as not trusted. A trust decision that a Pi session made for itself without saving it does not reach its children; when the tool spawns in such a session, it adds `The child gets no project skills (.pi/skills, .agents/skills): this project is trusted for this Pi session only, and children see only the trust saved for future sessions. To give children project skills, run /trust and choose Trust.` to its output. The host checks the trust on every model request, so a decision saved later applies from the next request. The host reads the instructions and skills of a directory once per trust decision and keeps them until it exits. It skips packages that are not installed. When the instructions or skills of a directory fail to load, the child gets none for that request, the host writes a warning, and the next request tries again.
 
@@ -142,5 +142,4 @@ A child's system prompt has what a Pi session in the child's working directory g
 - Children get only `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, and the `piDurable` tools of installed packages. The host does not load the `piDurable` entry of its own package directory, because it gives its children the tool with their own caller. They get no MCP tools and no other Pi extensions. Entries of packages installed with npm do not load, because Node does not strip types under `node_modules`.
 - A change to `AGENTS.md` or to a skill reaches children only after the host restarts.
 - `--file` gives text only; images are not attached.
-- `stop` removes only the named child. The children that it spawned stay in the store, and no caller can reach them.
 - The CLI sends each `spawn` once and has no `key`. If the host stops during a `spawn` and you run the command again, there can be two children.

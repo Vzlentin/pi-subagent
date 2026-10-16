@@ -15,7 +15,7 @@ const NO_ABORT = new AbortController().signal;
 
 export const TOOL_DESCRIPTION = `Spawn and manage subagents: separate agents with their own context, for second opinions, independent investigations and delegated work.
 - spawn: start a child with \`prompts\` and \`files\`. It uses your provider, model and thinking level unless you give others. Give it a short \`name\`. It prints \`Spawned <name> (<handle>)\`. The handle is the short hex ID in parentheses, not the name.
-- status, wait, send, rename, stop: act on the child \`handle\`. \`wait\` waits until the child is idle (up to \`timeout\` seconds, default 1800) and gives its last answer. \`send\` steers a busy child, or queues \`message\` with \`followUp\`.
+- status, wait, send, rename, stop: act on the child \`handle\`. \`wait\` waits until the child answers its last message (up to \`timeout\` seconds, default 1800) and gives the answer. \`stop\` also stops the children the child spawned. \`send\` steers a busy child, or queues \`message\` with \`followUp\`.
 - list: your children.
 Calls in one message run one after another, in message order, so a \`wait\` after a \`send\` gives the answer to that message.
 Children persist after a turn. Stop each child when you no longer need it.`;

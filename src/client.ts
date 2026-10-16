@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { dirname, join } from "node:path";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import {
 	onLines,
@@ -15,27 +16,31 @@ import {
 
 const START_TIMEOUT_MS = 10_000;
 
-/** A connection to the host. Requests are answered in order, one reply line for each request line. */
+/**
+ * A connection to the host. Requests are answered in order, one reply line for each request line. After `watch`, the
+ * event lines of the watch come between the replies.
+ */
 export class Client {
 	readonly #socket: Socket;
 	readonly #pending: { resolve: (value: unknown) => void; reject: (reason: unknown) => void }[] = [];
 	#ended = false;
-	/** Gets the lines that no request waits for. Only `watch` sets it; otherwise such a line is dropped. */
-	#stream: { line: (line: string) => void; end: () => void } | undefined;
+	/** The events of the watch. Only `watch` sets it; otherwise an event is dropped. */
+	#lines: Readable | undefined;
 	/** The process ID of the host, from its `hello` reply. */
 	pid = 0;
 
 	constructor(socket: Socket) {
 		this.#socket = socket;
 		onLines(socket, (line) => {
-			const waiter = this.#pending.shift();
-			if (waiter === undefined) {
-				this.#stream?.line(line);
+			const parsed = JSON.parse(line) as Reply | { event: WatchLine };
+			if ("event" in parsed) {
+				this.#lines?.push(parsed.event);
 				return;
 			}
-			const reply = JSON.parse(line) as Reply;
-			if (reply.ok) waiter.resolve(reply.value);
-			else waiter.reject(new Error(reply.error));
+			const waiter = this.#pending.shift();
+			if (waiter === undefined) return;
+			if (parsed.ok) waiter.resolve(parsed.value);
+			else waiter.reject(new Error(parsed.error));
 		});
 		socket.on("error", () => this.#end());
 		socket.on("close", () => this.#end());
@@ -50,25 +55,14 @@ export class Client {
 	}
 
 	/**
-	 * Sends the `watch` request of `handle`. After it, the connection carries only the watch: do not send other
-	 * requests, the host closes the connection. The lines that come before `listen` wait for it.
+	 * Sends the `watch` request of `handle`. Its `lines` are the events of the watch, and end when the connection closes.
+	 * Other requests can follow on this client. Call it once.
 	 */
-	async watch(handle: string): Promise<Watch> {
-		const buffer: WatchLine[] = [];
-		let onLine: (line: WatchLine) => void = (line) => buffer.push(line);
-		let onEnd: (() => void) | undefined;
-		this.#stream = { line: (line) => onLine(JSON.parse(line) as WatchLine), end: () => onEnd?.() };
+	async watch(handle: string): Promise<Replies["watch"] & { lines: AsyncIterable<WatchLine> }> {
+		const lines = new Readable({ objectMode: true, read() {} });
+		this.#lines = lines;
 		const reply = await this.request({ type: "watch", handle });
-		return {
-			...reply,
-			listen: (lineListener, endListener) => {
-				for (const line of buffer.splice(0)) lineListener(line);
-				onLine = lineListener;
-				if (this.#ended) endListener();
-				else onEnd = endListener;
-			},
-			close: () => this.close(),
-		};
+		return { ...reply, lines };
 	}
 
 	close(): void {
@@ -82,21 +76,11 @@ export class Client {
 	}
 
 	#end(reason: unknown = new Error("The subagent host closed the connection")): void {
-		if (!this.#ended) this.#stream?.end();
+		if (!this.#ended) this.#lines?.push(null);
 		this.#ended = true;
 		for (const waiter of this.#pending.splice(0)) waiter.reject(reason);
 	}
 }
-
-/** A watch of a child on a connection of its own: the reply of the `watch` request, and the lines after it. */
-export type Watch = Replies["watch"] & {
-	/**
-	 * Calls `onLine` with each line after the reply, the lines that came before this call first, and `onEnd` once when
-	 * the connection closes. Call it once.
-	 */
-	listen(onLine: (line: WatchLine) => void, onEnd: () => void): void;
-	close(): void;
-};
 
 /**
  * A connection to the host after its `hello`. When no host listens and `start` is true, it starts one, detached, with its
@@ -127,18 +111,6 @@ export async function connect(options: ConnectOptions): Promise<Client | undefin
 		}
 		client.pid = hello.pid;
 		return client;
-	} catch (error) {
-		client.close();
-		throw error;
-	}
-}
-
-/** Watches the child `handle` on a new connection. It starts the host as `connect` does. */
-export async function watch(handle: string): Promise<Watch> {
-	const client = await connect({ start: true });
-	if (client === undefined) throw new Error("Could not connect to the subagent host");
-	try {
-		return await client.watch(handle);
 	} catch (error) {
 		client.close();
 		throw error;

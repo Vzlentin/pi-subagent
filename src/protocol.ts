@@ -2,10 +2,10 @@ import type { Socket } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Op } from "@earendil-works/chord/delta";
-import type { ConversationView, LiveState } from "@earendil-works/pi-durable";
+import { type ConversationView, LiveDoc, type LiveState } from "@earendil-works/pi-durable";
 
 /** The version of the protocol between the CLI and the host. A client refuses a host with another version. */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 export type ChildState = "busy" | "idle" | "error";
 
@@ -50,13 +50,21 @@ export type Request =
 	| { readonly type: "rename"; readonly caller: string; readonly handle: string; readonly name: string }
 	| { readonly type: "stop"; readonly caller: string; readonly handle: string }
 	/**
-	 * The viewer's stream of the child: the reply, then one `WatchLine` after each commit to the child's conversation
-	 * and after each rename. `watch()` sends it on a connection of its own. Do not send requests on a watch connection;
-	 * the host closes the connection.
+	 * The viewer's stream of the child: the reply, then one `{ event: WatchLine }` line after each commit to the child's
+	 * conversation and after each rename. Every other line on the connection stays a reply, in request order. A
+	 * connection carries one watch.
 	 */
 	| { readonly type: "watch"; readonly handle: string }
 	/** Stops the child's current turn. The viewer sends it. */
-	| { readonly type: "abort"; readonly handle: string };
+	| { readonly type: "abort"; readonly handle: string }
+	/** The viewer's message to the child. It has no caller. */
+	| {
+			readonly type: "input";
+			readonly requestId: string;
+			readonly handle: string;
+			readonly message: string;
+			readonly followUp: boolean;
+	  };
 
 /** The value of the reply to each request type. */
 export type Replies = {
@@ -68,18 +76,22 @@ export type Replies = {
 	readonly list: readonly ChildInfo[];
 	readonly rename: ChildInfo;
 	readonly stop: { readonly handle: string; readonly name?: string };
-	readonly watch: { readonly view: ConversationView; readonly child: ChildInfo; readonly caller: string };
+	readonly watch: { readonly view: ConversationView; readonly child: ChildInfo };
 	readonly abort: ChildInfo;
+	readonly input: Replies["send"];
 };
 
-/** A line of a watch after its reply: the changes of one commit or a rename, or the end when the child was stopped. */
+/**
+ * An event of a watch after its reply, sent as `{ event: WatchLine }`: the changes of one commit or a rename, or the end
+ * when the child was stopped.
+ */
 export type WatchLine =
 	| { readonly ops: readonly Op[]; readonly child: ChildInfo; readonly stopped?: undefined }
 	| { readonly stopped: true };
 
 /** The live state of a conversation view: the running turn, the streamed message and the tool slots. */
 export function liveState(view: ConversationView): LiveState | undefined {
-	return view.docs["pi.live"];
+	return view.docs[LiveDoc.definition.kind];
 }
 
 /** One reply line. */
@@ -100,6 +112,11 @@ export function isValidRunName(value: unknown): value is string {
 		// biome-ignore lint/suspicious/noControlCharactersInRegex: a name must not contain control characters.
 		!/[\u0000-\u001f\u007f]/.test(value)
 	);
+}
+
+/** The label of a child: its name, or its handle when it has no name. */
+export function childLabel(child: { readonly handle: string; readonly name?: string | undefined }): string {
+	return child.name ?? child.handle;
 }
 
 export function runDisplayName(metadata: { readonly handle: string; readonly name?: string | undefined }): string {
