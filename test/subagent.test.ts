@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { connect, request, watch } from "../client.ts";
 import subagentEntry, { subagentTool } from "../durable.ts";
 import type { Host } from "../host.ts";
+import { SESSION_TRUST_HINT } from "../index.ts";
 import {
 	CLI,
 	called,
@@ -165,10 +166,16 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(seen?.system).toContain(`<cwd>\n${project}\n</cwd>`);
 		expect(seen?.tools).toEqual(["read", "grep", "find", "ls", "write", "edit", "bash", "subagent"]);
 
-		// Once `/trust` saves the decision, the next request loads the project skill.
+		// A Pi session that trusts its project for itself only is told what its child misses.
+		const sessionOnly = piContext("faux-1", { cwd: project, trusted: true });
+		const spawn = { action: "spawn", prompts: ["Session trust"] };
+		expect((await callPi(piTool("medium"), sessionOnly, spawn)).text).toContain(`\n${SESSION_TRUST_HINT}\n`);
+
+		// Once `/trust` saves the decision, the next request loads the project skill, and the session is told nothing.
 		new ProjectTrustStore(join(root, "agent")).set(project, true);
 		await cli(["wait", handleOf(await cli(["spawn", "--cwd", project, "--prompt", "Trusted context"]))]);
 		expect(requests.get("Task:\nTrusted context")?.system).toContain("<name>local</name>");
+		expect((await callPi(piTool("medium"), sessionOnly, spawn)).text).not.toContain(SESSION_TRUST_HINT);
 
 		// A child without `read` loads skills with bash.
 		await cli(["wait", handleOf(await cli(["spawn", "--cwd", project, "--tools", "bash", "--prompt", "Bash only"]))]);

@@ -181,12 +181,19 @@ export function piTool(thinking: string): ToolDefinition {
 	return tool;
 }
 
-/** The context of a Pi tool call in the session `pi-session`, with the model `faux/<model>`. */
-export function piContext(model: string): ExtensionToolContext {
+/**
+ * The context of a Pi tool call in the session `pi-session`, with the model `faux/<model>`, in `cwd` (default the
+ * root), whose project the session trusts when `trusted` is true.
+ */
+export function piContext(
+	model: string,
+	scope: { readonly cwd?: string; readonly trusted?: boolean } = {},
+): ExtensionToolContext {
 	return {
 		model: { provider: "faux", id: model },
 		sessionManager: { getSessionId: () => "pi-session" },
-		cwd: root,
+		cwd: scope.cwd ?? root,
+		isProjectTrusted: () => scope.trusted === true,
 	} as unknown as ExtensionToolContext;
 }
 

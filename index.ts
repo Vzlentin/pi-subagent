@@ -1,12 +1,16 @@
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { childLine, request } from "./client.ts";
+import { savedTrust } from "./context.ts";
 import { openViewerTab } from "./herdr.ts";
 import { runTool, sendToHost, TOOL_DESCRIPTION, toolSchemas } from "./tool.ts";
 
 const packageDir = dirname(fileURLToPath(import.meta.url));
+
+export const SESSION_TRUST_HINT =
+	"The child gets no project skills: this session trusts the project for itself only. Run /trust to save the decision.";
 
 export default function subagentExtension(pi: ExtensionAPI) {
 	pi.on("resources_discover", () => ({ skillPaths: [join(packageDir, "skills")] }));
@@ -30,7 +34,14 @@ export default function subagentExtension(pi: ExtensionAPI) {
 				send: sendToHost,
 				signal,
 			});
-			return { content: [{ type: "text", text }], details: undefined, structuredContent: data };
+			// Children follow only the saved trust, so a session that trusts its project for itself says what the child misses.
+			const sessionOnly =
+				args.action === "spawn" &&
+				ctx.isProjectTrusted() &&
+				!savedTrust(ctx.cwd) &&
+				!savedTrust(resolve(ctx.cwd, args.cwd ?? "."));
+			const hint = sessionOnly ? `\n${SESSION_TRUST_HINT}\n` : "";
+			return { content: [{ type: "text", text: text + hint }], details: undefined, structuredContent: data };
 		},
 	});
 

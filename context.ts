@@ -31,7 +31,7 @@ import { createBashTool, createEditTool, createReadTool, createWriteTool } from 
  * Whether Pi trusts the project in `cwd` with no one to ask: a directory without project resources is trusted, then a
  * decision saved with `/trust` counts, then the `defaultProjectTrust` setting, where `ask` means not trusted.
  */
-function savedTrust(cwd: string): boolean {
+export function savedTrust(cwd: string): boolean {
 	if (!hasTrustRequiringProjectResources(cwd)) return true;
 	const agentDir = getAgentDir();
 	const decision = new ProjectTrustStore(agentDir).get(cwd);
