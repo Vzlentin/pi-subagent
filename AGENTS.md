@@ -2,6 +2,6 @@
 - README.md is the behaviour spec: CLI commands, arguments and output lines, the tool, and where state lives. Update it in the same change as the behaviour.
 - This is a fork of `badlogic/pi-subagent`, kept as the remote `badlogic`. `origin` is `Vzlentin/pi-subagent`.
 - Dependency versions are pinned exactly. The `@earendil-works/*` packages share one version; change them together.
-- Pi supplies `pi-ai`, `pi-coding-agent` and `pi-tui` to the extension, so they are `peerDependencies` at `"*"`. Processes that run outside Pi need their own `pi-ai`, `pi-coding-agent` and `pi-tui`, so these three are also `optionalDependencies` at `^1.2.0`. Do not put them in `dependencies` or `devDependencies`. `chord` and `pi-durable` stay in `dependencies`.
+- Pi supplies `pi-ai`, `pi-coding-agent` and `pi-tui` to the extension, so they are `peerDependencies` at `"*"`. Processes that run outside Pi need their own `pi-ai`, `pi-coding-agent` and `pi-tui`, so these three are also `optionalDependencies` at `^1.3.0`. Do not put them in `dependencies` or `devDependencies`. `chord` and `pi-durable` stay in `dependencies`.
 - Pi loads the source directly and the `bin` runs `subagent.ts`, so the source must run with Node type stripping. There is no build step.
 - Tests must not call a real model, start tmux, or use the user's Pi or Git configuration. Use a temporary `PI_CODING_AGENT_DIR` and pi-ai's faux provider.
