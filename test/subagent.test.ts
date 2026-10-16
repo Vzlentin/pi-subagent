@@ -167,11 +167,21 @@ describe("subagent", { timeout: 30_000 }, () => {
 		// A Pi session that trusts its project passes the trust on to a child in its directory.
 		const { text } = await callPi(piTool("medium"), piContext("faux-1", { cwd: project, trusted: true }), {
 			action: "spawn",
+			name: "trusted",
 			prompts: ["Trusted context"],
 		});
 		const handle = /\(([a-z0-9]+)\)$/m.exec(text)?.[1] ?? "";
 		await cli(["wait", handle]);
 		expect(requests.get("Task:\nTrusted context")?.system).toContain("<name>local</name>");
+
+		// A trusted child that spawns with the CLI in its bash, in its own directory, passes its trust on.
+		const nest = await callPi(piTool("medium"), piContext("faux-1", { cwd: project, trusted: true }), {
+			action: "spawn",
+			name: "nest",
+			prompts: ["Trusted nest"],
+		});
+		await cli(["wait", /\(([a-z0-9]+)\)$/m.exec(nest.text)?.[1] ?? ""]);
+		expect(requests.get("Task:\nGrandchild")?.system).toContain("<name>local</name>");
 
 		// A child without `read` loads skills with bash.
 		await cli(["wait", handleOf(await cli(["spawn", "--cwd", project, "--tools", "bash", "--prompt", "Bash only"]))]);

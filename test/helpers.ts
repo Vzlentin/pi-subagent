@@ -126,6 +126,11 @@ async function respond(
 	if (prompt === "Task:\nNest") {
 		return fauxAssistantMessage(fauxToolCall("bash", { command: nestCommand() }), { stopReason: "toolUse" });
 	}
+	if (prompt === "Task:\nTrusted nest") {
+		const cli = `"${process.execPath}" "${CLI}"`;
+		const command = `${cli} wait "$(${cli} spawn --name grandchild --prompt Grandchild | sed -n 's/.*(\\([a-z0-9]*\\))$/\\1/p')"`;
+		return fauxAssistantMessage(fauxToolCall("bash", { command }), { stopReason: "toolUse" });
+	}
 	if (prompt === "Task:\nEnvironment") {
 		const command = 'echo "$PI_SESSION_ID $PI_PROVIDER $PI_MODEL $PI_REASONING_LEVEL"';
 		return fauxAssistantMessage(fauxToolCall("bash", { command }), { stopReason: "toolUse" });
@@ -215,6 +220,7 @@ export async function callPi(
 export async function setUp(): Promise<void> {
 	// macOS limits a Unix socket path to 104 bytes, so the state stays short, under /tmp.
 	root = await mkdtemp("/tmp/pi-subagent-");
+	requests.clear();
 	await mkdir(join(root, "agent"));
 	await mkdir(join(root, "home"));
 	await writeFile(join(root, "agent", "settings.json"), JSON.stringify({ retry: { enabled: false } }));

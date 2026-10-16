@@ -29,14 +29,14 @@ import {
 } from "@earendil-works/pi-durable";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 
-/** Whether a conversation's project is trusted, decided when the conversation is created. */
-export const Trust = defineDoc<{ trusted: boolean | null }>({
+/** Whether a conversation's project is trusted, decided when the conversation is created; without a decision, not. */
+export const Trust = defineDoc<{ trusted: boolean }>({
 	kind: "pi-subagent.trust",
 	version: 1,
 	scope: "conversation",
 	history: "latest",
 	fork: "current",
-	initial: () => ({ trusted: null }),
+	initial: () => ({ trusted: false }),
 });
 
 /**
@@ -72,7 +72,8 @@ function piTool<T extends TSchema>(create: (cwd: string) => PiTool<T>): ToolRegi
 		parameters,
 		replay: "safe",
 		execute: async (args, api, context) => {
-			const { cwd = "." } = await api.agent(context);
+			const { cwd } = await api.agent(context);
+			if (cwd === undefined) throw new Error(`${name} needs a working directory`);
 			const result = await create(cwd).execute(api.callId, args, context.abortSignal);
 			return { output: result.content };
 		},
@@ -87,7 +88,8 @@ const resources = new Map<string, Promise<Resources>>();
 
 /**
  * The project instructions and skills of `cwd`, loaded once per directory and trust as Pi loads them at startup.
- * Project skills load only for a trusted project. Missing packages are skipped, not installed.
+ * Project skills load only for a trusted project. Missing packages are skipped, not installed. A directory whose
+ * resources fail to load gets none, with a warning, as Pi skips a resource it cannot load.
  */
 function resourcesOf(cwd: string, trusted: boolean): Promise<Resources> {
 	const key = `${trusted}:${cwd}`;
@@ -102,9 +104,12 @@ function resourcesOf(cwd: string, trusted: boolean): Promise<Resources> {
 				context: loadProjectContextFiles({ cwd, agentDir }),
 				skills: loadSkills({ cwd, agentDir, skillPaths, includeDefaults: false }).skills,
 			};
-		})();
-		// A failed load is tried again at the next request.
-		found.catch(() => resources.delete(key));
+		})().catch((error: unknown) => {
+			process.stderr.write(
+				`warning: ${cwd}: ${error instanceof Error ? error.message : String(error)}; no project instructions or skills\n`,
+			);
+			return { context: [], skills: [] };
+		});
 		resources.set(key, found);
 	}
 	return found;
@@ -126,12 +131,12 @@ function skillPath(resource: {
 
 const cwdOf = (input: PromptInput): string | undefined => input.env?.cwd ?? input.agent.cwd;
 
-/** The resources of the conversation's directory; a conversation without a trust decision takes the saved one. */
+/** The resources of the conversation's directory, with the trust decided at its creation. */
 async function inputResources(input: PromptInput, context: Context): Promise<Resources | undefined> {
 	const cwd = cwdOf(input);
 	if (cwd === undefined) return undefined;
 	const trust = await input.read.snapshot(Trust, input.conversationId, context);
-	return resourcesOf(cwd, trust?.trusted ?? savedTrust(cwd));
+	return resourcesOf(cwd, trust?.trusted ?? false);
 }
 
 /** The tools and sections that children get; a conversation selects it by default. */

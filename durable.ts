@@ -13,8 +13,6 @@ import { runTool, type Send, sendToHost, TOOL_DESCRIPTION, toolSchemas } from ".
 export type DurableScope = {
 	/** The caller that owns the children of the calling conversation. */
 	caller(api: ToolExecutionApi, context: Context): Promise<string>;
-	/** Whether the calling conversation trusts the project in its working directory, when the host knows. */
-	trusted?(api: ToolExecutionApi, context: Context): Promise<boolean | undefined>;
 	readonly send: Send;
 };
 
@@ -40,7 +38,8 @@ export function subagentTool(durable: typeof Durable, ai: typeof Ai, scope: Dura
 				model: agent.model?.modelId,
 				thinking: agent.thinkingLevel,
 				cwd: agent.cwd,
-				trusted: await scope.trusted?.(api, context),
+				// The host finds the trust of a calling child itself.
+				trusted: undefined,
 				send: scope.send,
 				signal: context.abortSignal,
 			});

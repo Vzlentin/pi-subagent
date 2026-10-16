@@ -141,8 +141,6 @@ export async function runHost(options: {
 	// of a connection. Its caller is its conversation ID, which the depth limit and the owner checks key on.
 	const tool = subagentTool(durable, ai, {
 		caller: async (api) => String(api.conversationId),
-		trusted: async (api, toolContext) =>
-			(await api.snapshot(Trust, api.conversationId, toolContext))?.trusted ?? undefined,
 		send: (request, signal) => handleRequest(request, { harness, models, registry, signal }),
 	});
 	const selected = [ChildContext, tool, ...entries.extensions];
@@ -347,7 +345,7 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 			});
 		}
 		if (depthOf(request.caller, state?.children ?? {}) > MAX_DEPTH) throw new Error("Nested subagents are disabled");
-		const trusted = request.trusted ?? savedTrust(request.cwd);
+		const trusted = request.trusted ?? (await callerTrust(harness, request, state)) ?? savedTrust(request.cwd);
 		const root = await harness.root(context);
 		handle = await root.commit(async (tx) => {
 			const current = await tx.doc(Children);
@@ -384,6 +382,24 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 		requestId: `spawn:${request.requestId}`,
 	});
 	return childInfo(harness, handle, record);
+}
+
+/**
+ * The trust decision of a caller that is a child spawning in its own working directory, whether with the tool or with
+ * the CLI in its bash.
+ */
+async function callerTrust(
+	harness: Harness,
+	request: Extract<Request, { type: "spawn" }>,
+	state: Readonly<ChildrenState> | undefined,
+): Promise<boolean | undefined> {
+	const parent = Object.values(state?.children ?? {}).find(
+		({ conversationId }) => String(conversationId) === request.caller,
+	);
+	if (parent === undefined) return undefined;
+	const agent = await harness.snapshot(AgentDoc, parent.conversationId, context);
+	if (agent?.cwd !== request.cwd) return undefined;
+	return (await harness.snapshot(Trust, parent.conversationId, context))?.trusted ?? false;
 }
 
 async function sendChild(
