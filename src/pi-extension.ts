@@ -2,11 +2,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { request } from "./client.ts";
-import { savedTrust } from "./context.ts";
-import { openViewerTab } from "./herdr.ts";
-import { childLine, runDisplayName } from "./protocol.ts";
-import { runTool, sendToHost, TOOL_DESCRIPTION, toolSchemas } from "./tool.ts";
+import { request } from "harness/client";
+import { openViewerTab } from "harness/herdr";
+import { childLine, runDisplayName } from "harness/protocol";
+import { runTool, sendToHost, TOOL_DESCRIPTION, toolSchemas } from "harness/tool";
+import { savedTrust } from "harness/trust";
 
 const packageDir = dirname(fileURLToPath(import.meta.url));
 
@@ -60,7 +60,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
 				.filter((c) => chosen?.startsWith(`${runDisplayName(c)}  `))
 				.sort((a, b) => runDisplayName(b).length - runDisplayName(a).length)[0];
 			if (child === undefined) return;
-			const command = `subagent attach ${child.handle}`;
+			const command = `harness attach ${child.handle}`;
 			if (!process.env.HERDR_ENV) {
 				ctx.ui.notify(`Run in another terminal: ${command}`, "info");
 				return;
