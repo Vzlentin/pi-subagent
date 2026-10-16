@@ -22,6 +22,7 @@ import {
 	models,
 	piContext,
 	piTool,
+	requests,
 	root,
 	setUp,
 	startHost,
@@ -130,11 +131,52 @@ describe("subagent", { timeout: 30_000 }, () => {
 	it("refuses unknown arguments, models and tools", async () => {
 		expect((await cli(["spawn", "--no-skills", "--prompt", "x"])).stderr).toBe("Unknown spawn argument: --no-skills\n");
 		expect((await cli(["spawn", "--model", "nope", "--prompt", "x"])).stderr).toBe("Unknown model: faux/nope\n");
-		expect((await cli(["spawn", "--tools", "read,grep", "--prompt", "x"])).stderr).toBe("Unknown tool: grep\n");
+		expect((await cli(["spawn", "--tools", "read,web", "--prompt", "x"])).stderr).toBe("Unknown tool: web\n");
 		expect((await cli(["status", "abcdef"])).stderr).toBe("Unknown subagent: abcdef\n");
 		expect((await cli(["spawn", "--thinking", "huge", "--prompt", "x"])).stderr).toBe("Invalid thinking level: huge\n");
 		expect((await cli(["spawn", "--name", "x"])).stderr).toBe("spawn requires at least one prompt or file\n");
 		expect((await cli(["status", "ABC"])).stderr).toBe("Invalid subagent handle: ABC\n");
+	});
+
+	it("gives a child the project instructions, skills, tools and directory, as a Pi session there", async () => {
+		const project = join(root, "project");
+		const skill = async (dir: string, name: string) => {
+			await mkdir(join(dir, name), { recursive: true });
+			await writeFile(
+				join(dir, name, "SKILL.md"),
+				`---\nname: ${name}\ndescription: The ${name} skill.\n---\nDo it.\n`,
+			);
+		};
+		await mkdir(project);
+		await writeFile(join(project, "AGENTS.md"), "Use tabs.");
+		await skill(join(project, ".pi", "skills"), "local");
+		await skill(join(root, "agent", "skills"), "greet");
+
+		// The CLI knows no trust, and no decision is saved with `/trust`, so the project skill stays out.
+		await cli(["wait", handleOf(await cli(["spawn", "--cwd", project, "--prompt", "Context"]))]);
+		const seen = requests.get("Task:\nContext");
+		expect(seen?.system).toContain(
+			`<project_context>\nProject-specific instructions and guidelines:\n\n<project_instructions path="${join(project, "AGENTS.md")}">\nUse tabs.\n</project_instructions>\n</project_context>`,
+		);
+		expect(seen?.system).toContain("<name>greet</name>");
+		expect(seen?.system).toContain("Use the read tool to load a skill's file");
+		expect(seen?.system).not.toContain("<name>local</name>");
+		expect(seen?.system).toContain(`<cwd>\n${project}\n</cwd>`);
+		expect(seen?.tools).toEqual(["read", "grep", "find", "ls", "write", "edit", "bash", "subagent"]);
+
+		// A Pi session that trusts its project passes the trust on to a child in its directory.
+		const { text } = await callPi(piTool("medium"), piContext("faux-1", { cwd: project, trusted: true }), {
+			action: "spawn",
+			prompts: ["Trusted context"],
+		});
+		const handle = /\(([a-z0-9]+)\)$/m.exec(text)?.[1] ?? "";
+		await cli(["wait", handle]);
+		expect(requests.get("Task:\nTrusted context")?.system).toContain("<name>local</name>");
+
+		// A child without `read` loads skills with bash.
+		await cli(["wait", handleOf(await cli(["spawn", "--cwd", project, "--tools", "bash", "--prompt", "Bash only"]))]);
+		expect(requests.get("Task:\nBash only")?.system).toContain("Use bash to load a skill's file");
+		expect(requests.get("Task:\nBash only")?.tools).toEqual(["bash"]);
 	});
 
 	it("gives the child's bash its session ID, provider, model and thinking level", async () => {

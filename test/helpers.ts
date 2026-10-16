@@ -2,7 +2,13 @@ import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AssistantMessage, Message, SimpleStreamOptions, TranscriptContext } from "@earendil-works/pi-ai";
+import {
+	type AssistantMessage,
+	getSystemMessageText,
+	type Message,
+	type SimpleStreamOptions,
+	type TranscriptContext,
+} from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -23,6 +29,8 @@ type Call = {
 };
 
 export const calls: Call[] = [];
+/** The system prompt and the tools of the last request for each prompt. */
+export const requests = new Map<string, { readonly system: string; readonly tools: readonly string[] }>();
 /** Requests that wait for a test to release them, by prompt. */
 export const gates = new Map<string, PromiseWithResolvers<void>>();
 
@@ -92,6 +100,13 @@ async function respond(
 	}
 	if (last?.role === "toolResult") return fauxAssistantMessage(`Tool said: ${textOf(last)}`);
 	calls.push({ provider: model.provider, model: model.id, thinking: options?.reasoning, prompt });
+	const [system] = context.messages;
+	if (system?.role === "system") {
+		requests.set(prompt, {
+			system: getSystemMessageText(system),
+			tools: (system.toolsAdded ?? []).map(({ name }) => name),
+		});
+	}
 	const gate = gates.get(prompt);
 	if (gate !== undefined) {
 		await Promise.race([
@@ -166,12 +181,19 @@ export function piTool(thinking: string): ToolDefinition {
 	return tool;
 }
 
-/** The context of a Pi tool call in the session `pi-session`, with the model `faux/<model>`. */
-export function piContext(model: string): ExtensionToolContext {
+/**
+ * The context of a Pi tool call in the session `pi-session`, with the model `faux/<model>`, in `cwd` (default the
+ * root), whose project the session trusts when `trusted` is true.
+ */
+export function piContext(
+	model: string,
+	scope: { readonly cwd?: string; readonly trusted?: boolean } = {},
+): ExtensionToolContext {
 	return {
 		model: { provider: "faux", id: model },
 		sessionManager: { getSessionId: () => "pi-session" },
-		cwd: root,
+		cwd: scope.cwd ?? root,
+		isProjectTrusted: () => scope.trusted === true,
 	} as unknown as ExtensionToolContext;
 }
 

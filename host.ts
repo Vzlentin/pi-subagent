@@ -37,7 +37,6 @@ import {
 } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { CodingTools } from "@earendil-works/pi-durable/tools";
 import {
 	type ChildInfo,
 	type ChildState,
@@ -49,6 +48,7 @@ import {
 	type Request,
 	type WatchLine,
 } from "./client.ts";
+import { ChildContext, savedTrust, Trust } from "./context.ts";
 import { subagentTool } from "./durable.ts";
 
 /** The root of this package, whose `piDurable` entry the host does not load. */
@@ -141,9 +141,11 @@ export async function runHost(options: {
 	// of a connection. Its caller is its conversation ID, which the depth limit and the owner checks key on.
 	const tool = subagentTool(durable, ai, {
 		caller: async (api) => String(api.conversationId),
+		trusted: async (api, toolContext) =>
+			(await api.snapshot(Trust, api.conversationId, toolContext))?.trusted ?? undefined,
 		send: (request, signal) => handleRequest(request, { harness, models, registry, signal }),
 	});
-	const selected = [CodingTools, tool, ...entries.extensions];
+	const selected = [ChildContext, tool, ...entries.extensions];
 	try {
 		for (const extension of selected) registry.install(extension);
 		registry.install(SubagentTasks);
@@ -345,6 +347,7 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 			});
 		}
 		if (depthOf(request.caller, state?.children ?? {}) > MAX_DEPTH) throw new Error("Nested subagents are disabled");
+		const trusted = request.trusted ?? savedTrust(request.cwd);
 		const root = await harness.root(context);
 		handle = await root.commit(async (tx) => {
 			const current = await tx.doc(Children);
@@ -360,6 +363,7 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 				cwd: request.cwd,
 				...(tools === undefined ? {} : { tools }),
 			});
+			(await tx.doc(Trust, child.id)).trusted = trusted;
 			current.children[fresh] = {
 				...(request.name === undefined ? {} : { name: request.name }),
 				caller: request.caller,

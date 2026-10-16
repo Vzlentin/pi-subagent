@@ -75,7 +75,7 @@ subagent spawn \
   --prompt "Run the targeted tests"
 ```
 
-Restrict tools with `--tools`, a comma-separated list. Without it, a child gets `read`, `write`, `edit`, `bash`, `subagent`, and the tools of installed packages (see Limits). An unknown tool name is an error:
+Restrict tools with `--tools`, a comma-separated list. Without it, a child gets `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, and the tools of installed packages (see Limits). An unknown tool name is an error:
 
 ```sh
 subagent spawn --tools read,bash --prompt "Investigate the failure"
@@ -135,10 +135,12 @@ The host keeps its state in `$XDG_STATE_HOME/pi-subagent/` (default `~/.local/st
 
 A child's bash commands get `PI_SESSION_ID` (the child's conversation ID), `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL`, so a child can spawn its own children with the same configuration. A child of a child is the deepest level: a deeper spawn fails with `Nested subagents are disabled`. Children survive `/reload` and the end of the parent Pi session. `subagent stop` removes a child permanently.
 
+A child's system prompt has what a Pi session in the child's working directory gets: the `AGENTS.md` or `CLAUDE.md` of the agent directory and of the working directory and its parents, the skills, and the working directory. User skills always load. Project skills (`.pi/skills`, and `.agents/skills` in the working directory and its parents) load only for a trusted project. A spawn in the caller's own working directory carries the caller's trust decision: a Pi session's, or that of the child that spawns. Any other spawn takes the decision saved with `/trust`, then the `defaultProjectTrust` setting, where `ask` counts as not trusted. The decision is made once, at the spawn. The host reads the instructions and skills of a directory once and keeps them until it exits. It skips packages that are not installed.
+
 ## Limits
 
-- Children get only `read`, `write`, `edit`, `bash`, `subagent`, and the `piDurable` tools of installed packages. The host does not load the `piDurable` entry of its own package directory, because it gives its children the tool with their own caller. They get no MCP tools and no other Pi extensions. Entries of packages installed with npm do not load, because Node does not strip types under `node_modules`.
-- Children get no `AGENTS.md` and no skills.
+- Children get only `read`, `grep`, `find`, `ls`, `write`, `edit`, `bash`, `subagent`, and the `piDurable` tools of installed packages. The host does not load the `piDurable` entry of its own package directory, because it gives its children the tool with their own caller. They get no MCP tools and no other Pi extensions. Entries of packages installed with npm do not load, because Node does not strip types under `node_modules`.
+- A change to `AGENTS.md` or to a skill reaches children only after the host restarts.
 - `--file` gives text only; images are not attached.
 - `stop` removes only the named child. The children that it spawned stay in the store, and no caller can reach them.
 - The CLI sends each `spawn` once and has no `key`. If the host stops during a `spawn` and you run the command again, there can be two children.

@@ -27,6 +27,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
 				model: ctx.model?.id,
 				thinking: pi.getThinkingLevel(),
 				cwd: ctx.cwd,
+				trusted: ctx.isProjectTrusted(),
 				send: sendToHost,
 				signal,
 			});

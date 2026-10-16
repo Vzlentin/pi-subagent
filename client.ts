@@ -38,6 +38,8 @@ export type Request =
 			readonly model: string;
 			readonly thinking: string;
 			readonly cwd: string;
+			/** Whether the caller trusts the project in `cwd`; without it, the host takes the decision saved with `/trust`. */
+			readonly trusted?: boolean;
 			readonly tools?: readonly string[];
 			readonly prompt: string;
 	  }
