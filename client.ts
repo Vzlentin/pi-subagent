@@ -38,11 +38,6 @@ export type Request =
 			readonly model: string;
 			readonly thinking: string;
 			readonly cwd: string;
-			/**
-			 * Whether the caller trusts the project in `cwd`. Without it, a child spawning in its own directory passes on its
-			 * decision, and otherwise the host takes the decision saved with `/trust`.
-			 */
-			readonly trusted?: boolean;
 			readonly tools?: readonly string[];
 			readonly prompt: string;
 	  }

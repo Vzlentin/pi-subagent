@@ -153,7 +153,6 @@ async function main(): Promise<void> {
 		model: process.env.PI_MODEL,
 		thinking: process.env.PI_REASONING_LEVEL || "medium",
 		cwd: process.cwd(),
-		trusted: undefined,
 		send: sendToHost,
 		signal: undefined,
 	});

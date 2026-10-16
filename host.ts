@@ -48,7 +48,7 @@ import {
 	type Request,
 	type WatchLine,
 } from "./client.ts";
-import { ChildContext, savedTrust, Trust } from "./context.ts";
+import { ChildContext } from "./context.ts";
 import { subagentTool } from "./durable.ts";
 
 /** The root of this package, whose `piDurable` entry the host does not load. */
@@ -345,7 +345,6 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 			});
 		}
 		if (depthOf(request.caller, state?.children ?? {}) > MAX_DEPTH) throw new Error("Nested subagents are disabled");
-		const trusted = request.trusted ?? (await callerTrust(harness, request, state)) ?? savedTrust(request.cwd);
 		const root = await harness.root(context);
 		handle = await root.commit(async (tx) => {
 			const current = await tx.doc(Children);
@@ -361,7 +360,6 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 				cwd: request.cwd,
 				...(tools === undefined ? {} : { tools }),
 			});
-			(await tx.doc(Trust, child.id)).trusted = trusted;
 			current.children[fresh] = {
 				...(request.name === undefined ? {} : { name: request.name }),
 				caller: request.caller,
@@ -382,24 +380,6 @@ async function spawnChild(request: Extract<Request, { type: "spawn" }>, handler:
 		requestId: `spawn:${request.requestId}`,
 	});
 	return childInfo(harness, handle, record);
-}
-
-/**
- * The trust decision of a caller that is a child spawning in its own working directory, whether with the tool or with
- * the CLI in its bash.
- */
-async function callerTrust(
-	harness: Harness,
-	request: Extract<Request, { type: "spawn" }>,
-	state: Readonly<ChildrenState> | undefined,
-): Promise<boolean | undefined> {
-	const parent = Object.values(state?.children ?? {}).find(
-		({ conversationId }) => String(conversationId) === request.caller,
-	);
-	if (parent === undefined) return undefined;
-	const agent = await harness.snapshot(AgentDoc, parent.conversationId, context);
-	if (agent?.cwd !== request.cwd) return undefined;
-	return (await harness.snapshot(Trust, parent.conversationId, context))?.trusted ?? false;
 }
 
 async function sendChild(

@@ -38,8 +38,6 @@ export function subagentTool(durable: typeof Durable, ai: typeof Ai, scope: Dura
 				model: agent.model?.modelId,
 				thinking: agent.thinkingLevel,
 				cwd: agent.cwd,
-				// The host finds the trust of a calling child itself.
-				trusted: undefined,
 				send: scope.send,
 				signal: context.abortSignal,
 			});

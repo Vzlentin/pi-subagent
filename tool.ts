@@ -98,8 +98,6 @@ export type ToolScope = {
 	readonly thinking: string;
 	/** Relative `cwd` and `files` paths resolve against it. A caller without one cannot spawn. */
 	readonly cwd: string | undefined;
-	/** Whether the caller trusts the project in `cwd`. A spawn passes it on only to a child in that directory. */
-	readonly trusted: boolean | undefined;
 	readonly send: Send;
 	readonly signal: AbortSignal | undefined;
 };
@@ -182,7 +180,6 @@ function spawnRequest(args: ToolArgs, scope: ToolScope, requestId: string): Extr
 		model,
 		thinking,
 		cwd,
-		...(scope.trusted === undefined || cwd !== resolve(base) ? {} : { trusted: scope.trusted }),
 		...(tools === undefined ? {} : { tools }),
 		prompt,
 	};

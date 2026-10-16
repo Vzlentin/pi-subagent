@@ -126,11 +126,6 @@ async function respond(
 	if (prompt === "Task:\nNest") {
 		return fauxAssistantMessage(fauxToolCall("bash", { command: nestCommand() }), { stopReason: "toolUse" });
 	}
-	if (prompt === "Task:\nTrusted nest") {
-		const cli = `"${process.execPath}" "${CLI}"`;
-		const command = `${cli} wait "$(${cli} spawn --name grandchild --prompt Grandchild | sed -n 's/.*(\\([a-z0-9]*\\))$/\\1/p')"`;
-		return fauxAssistantMessage(fauxToolCall("bash", { command }), { stopReason: "toolUse" });
-	}
 	if (prompt === "Task:\nEnvironment") {
 		const command = 'echo "$PI_SESSION_ID $PI_PROVIDER $PI_MODEL $PI_REASONING_LEVEL"';
 		return fauxAssistantMessage(fauxToolCall("bash", { command }), { stopReason: "toolUse" });
@@ -186,19 +181,12 @@ export function piTool(thinking: string): ToolDefinition {
 	return tool;
 }
 
-/**
- * The context of a Pi tool call in the session `pi-session`, with the model `faux/<model>`, in `cwd` (default the
- * root), whose project the session trusts when `trusted` is true.
- */
-export function piContext(
-	model: string,
-	scope: { readonly cwd?: string; readonly trusted?: boolean } = {},
-): ExtensionToolContext {
+/** The context of a Pi tool call in the session `pi-session`, with the model `faux/<model>`. */
+export function piContext(model: string): ExtensionToolContext {
 	return {
 		model: { provider: "faux", id: model },
 		sessionManager: { getSessionId: () => "pi-session" },
-		cwd: scope.cwd ?? root,
-		isProjectTrusted: () => scope.trusted === true,
+		cwd: root,
 	} as unknown as ExtensionToolContext;
 }
 

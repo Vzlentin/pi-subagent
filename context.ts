@@ -4,7 +4,6 @@
  */
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { Context } from "@earendil-works/chord/context";
 import type { ImageContent, Static, TextContent, TSchema } from "@earendil-works/pi-ai";
 import {
 	createFindTool,
@@ -20,7 +19,6 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import {
-	defineDoc,
 	defineExtension,
 	defineTool,
 	type PromptInput,
@@ -29,21 +27,11 @@ import {
 } from "@earendil-works/pi-durable";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 
-/** Whether a conversation's project is trusted, decided when the conversation is created; without a decision, not. */
-export const Trust = defineDoc<{ trusted: boolean }>({
-	kind: "pi-subagent.trust",
-	version: 1,
-	scope: "conversation",
-	history: "latest",
-	fork: "current",
-	initial: () => ({ trusted: false }),
-});
-
 /**
  * Whether Pi trusts the project in `cwd` with no one to ask: a directory without project resources is trusted, then a
  * decision saved with `/trust` counts, then the `defaultProjectTrust` setting, where `ask` means not trusted.
  */
-export function savedTrust(cwd: string): boolean {
+function savedTrust(cwd: string): boolean {
 	if (!hasTrustRequiringProjectResources(cwd)) return true;
 	const agentDir = getAgentDir();
 	const decision = new ProjectTrustStore(agentDir).get(cwd);
@@ -87,32 +75,39 @@ type Resources = {
 const resources = new Map<string, Promise<Resources>>();
 
 /**
- * The project instructions and skills of `cwd`, loaded once per directory and trust as Pi loads them at startup.
- * Project skills load only for a trusted project. Missing packages are skipped, not installed. A directory whose
- * resources fail to load gets none, with a warning, as Pi skips a resource it cannot load.
+ * The project instructions and skills of `cwd`, as Pi loads them at startup. Project skills load only for a project
+ * that Pi trusts now. They are loaded once per directory and trust. Missing packages are skipped, not installed. A
+ * load that fails gives no resources, with a warning, as Pi skips a resource it cannot load, and the next request
+ * tries again.
  */
-function resourcesOf(cwd: string, trusted: boolean): Promise<Resources> {
-	const key = `${trusted}:${cwd}`;
-	let found = resources.get(key);
-	if (found === undefined) {
-		found = (async () => {
-			const agentDir = getAgentDir();
-			const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: trusted });
-			const resolved = await new DefaultPackageManager({ cwd, agentDir, settingsManager }).resolve(async () => "skip");
-			const skillPaths = resolved.skills.filter(({ enabled }) => enabled).map(skillPath);
-			return {
-				context: loadProjectContextFiles({ cwd, agentDir }),
-				skills: loadSkills({ cwd, agentDir, skillPaths, includeDefaults: false }).skills,
-			};
-		})().catch((error: unknown) => {
-			process.stderr.write(
-				`warning: ${cwd}: ${error instanceof Error ? error.message : String(error)}; no project instructions or skills\n`,
-			);
-			return { context: [], skills: [] };
-		});
-		resources.set(key, found);
+async function resourcesOf(cwd: string): Promise<Resources> {
+	try {
+		const trusted = savedTrust(cwd);
+		const key = `${trusted}:${cwd}`;
+		let found = resources.get(key);
+		if (found === undefined) {
+			found = loadResources(cwd, trusted);
+			resources.set(key, found);
+			found.catch(() => resources.delete(key));
+		}
+		return await found;
+	} catch (error) {
+		process.stderr.write(
+			`warning: ${cwd}: ${error instanceof Error ? error.message : String(error)}; no project instructions or skills\n`,
+		);
+		return { context: [], skills: [] };
 	}
-	return found;
+}
+
+async function loadResources(cwd: string, trusted: boolean): Promise<Resources> {
+	const agentDir = getAgentDir();
+	const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: trusted });
+	const resolved = await new DefaultPackageManager({ cwd, agentDir, settingsManager }).resolve(async () => "skip");
+	const skillPaths = resolved.skills.filter(({ enabled }) => enabled).map(skillPath);
+	return {
+		context: loadProjectContextFiles({ cwd, agentDir }),
+		skills: loadSkills({ cwd, agentDir, skillPaths, includeDefaults: false }).skills,
+	};
 }
 
 /** The path that Pi loads a resolved skill from: the `SKILL.md` of a discovered or packaged skill directory. */
@@ -131,12 +126,10 @@ function skillPath(resource: {
 
 const cwdOf = (input: PromptInput): string | undefined => input.env?.cwd ?? input.agent.cwd;
 
-/** The resources of the conversation's directory, with the trust decided at its creation. */
-async function inputResources(input: PromptInput, context: Context): Promise<Resources | undefined> {
+/** The resources of the conversation's directory. */
+async function inputResources(input: PromptInput): Promise<Resources | undefined> {
 	const cwd = cwdOf(input);
-	if (cwd === undefined) return undefined;
-	const trust = await input.read.snapshot(Trust, input.conversationId, context);
-	return resourcesOf(cwd, trust?.trusted ?? false);
+	return cwd === undefined ? undefined : resourcesOf(cwd);
 }
 
 /** The tools and sections that children get; a conversation selects it by default. */
@@ -152,8 +145,8 @@ export const ChildContext = defineExtension({
 		createBashTool(),
 	],
 	sections: [
-		section("project_context", async (input, context) => {
-			const files = (await inputResources(input, context))?.context ?? [];
+		section("project_context", async (input) => {
+			const files = (await inputResources(input))?.context ?? [];
 			if (files.length === 0) return undefined;
 			return [
 				"Project-specific instructions and guidelines:",
@@ -162,7 +155,7 @@ export const ChildContext = defineExtension({
 				),
 			].join("\n\n");
 		}),
-		section("skills", async (input, context) => {
+		section("skills", async (input) => {
 			// As in Pi, skills need a tool that reads their files, and the hint names the first one offered.
 			const offered = input.agent.tools.map(({ name }) => name);
 			const callable = input.agent.callable.map(({ name }) => name);
@@ -170,7 +163,7 @@ export const ChildContext = defineExtension({
 				(["read", "bash"] as const).find((name) => offered.includes(name)) ??
 				(callable.includes("read") || callable.includes("bash") ? "indirect" : undefined);
 			if (reader === undefined) return undefined;
-			const skills = (await inputResources(input, context))?.skills ?? [];
+			const skills = (await inputResources(input))?.skills ?? [];
 			return formatSkillsForPrompt(skills, reader).trim() || undefined;
 		}),
 		section("cwd", (input) => cwdOf(input)?.replace(/\\/g, "/")),

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as ai from "@earendil-works/pi-ai";
+import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import * as durable from "@earendil-works/pi-durable";
 import { AssistantEntry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -152,7 +153,7 @@ describe("subagent", { timeout: 30_000 }, () => {
 		await skill(join(project, ".pi", "skills"), "local");
 		await skill(join(root, "agent", "skills"), "greet");
 
-		// The CLI knows no trust, and no decision is saved with `/trust`, so the project skill stays out.
+		// No decision is saved with `/trust`, so the project skill stays out.
 		await cli(["wait", handleOf(await cli(["spawn", "--cwd", project, "--prompt", "Context"]))]);
 		const seen = requests.get("Task:\nContext");
 		expect(seen?.system).toContain(
@@ -164,24 +165,10 @@ describe("subagent", { timeout: 30_000 }, () => {
 		expect(seen?.system).toContain(`<cwd>\n${project}\n</cwd>`);
 		expect(seen?.tools).toEqual(["read", "grep", "find", "ls", "write", "edit", "bash", "subagent"]);
 
-		// A Pi session that trusts its project passes the trust on to a child in its directory.
-		const { text } = await callPi(piTool("medium"), piContext("faux-1", { cwd: project, trusted: true }), {
-			action: "spawn",
-			name: "trusted",
-			prompts: ["Trusted context"],
-		});
-		const handle = /\(([a-z0-9]+)\)$/m.exec(text)?.[1] ?? "";
-		await cli(["wait", handle]);
+		// Once `/trust` saves the decision, the next request loads the project skill.
+		new ProjectTrustStore(join(root, "agent")).set(project, true);
+		await cli(["wait", handleOf(await cli(["spawn", "--cwd", project, "--prompt", "Trusted context"]))]);
 		expect(requests.get("Task:\nTrusted context")?.system).toContain("<name>local</name>");
-
-		// A trusted child that spawns with the CLI in its bash, in its own directory, passes its trust on.
-		const nest = await callPi(piTool("medium"), piContext("faux-1", { cwd: project, trusted: true }), {
-			action: "spawn",
-			name: "nest",
-			prompts: ["Trusted nest"],
-		});
-		await cli(["wait", /\(([a-z0-9]+)\)$/m.exec(nest.text)?.[1] ?? ""]);
-		expect(requests.get("Task:\nGrandchild")?.system).toContain("<name>local</name>");
 
 		// A child without `read` loads skills with bash.
 		await cli(["wait", handleOf(await cli(["spawn", "--cwd", project, "--tools", "bash", "--prompt", "Bash only"]))]);
