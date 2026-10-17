@@ -37,7 +37,7 @@ The extension gives Pi the `subagent` tool of harness. It does what the harness 
 | `rename` | `handle`, `name` |
 | `list` | none |
 
-The harness README describes the arguments and the results. The caller is the Pi session ID, the same as `PI_SESSION_ID` for the CLI, so `/subagent`, the widget, and `harness list` in that session show the tool's children. A spawn without `provider`, `model`, or `thinking` uses the session's model and thinking level. When the call is aborted, for example with Esc, a `wait` stops; the child continues.
+The harness README describes the arguments and the results. The caller is the Pi session ID, the same as `PI_SESSION_ID` for the CLI, so `/subagent`, the widget, and `harness list` in that session show the tool's children. A spawn without `provider`, `model`, or `thinking` uses the session's model and thinking level. When the model does not have that thinking level, the child gets the nearest level that the model has. A spawn refuses a `thinking` that the model does not have. When the call is aborted, for example with Esc, a `wait` stops; the child continues.
 
 A child's system prompt follows only the project trust saved for future sessions. When the session trusts its project for itself only, a spawn adds `The child gets no project skills (.pi/skills, .agents/skills): this project is trusted for this Pi session only, and children see only the trust saved for future sessions. To give children project skills, run /trust and choose Trust.` to its output.
 
