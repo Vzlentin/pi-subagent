@@ -20,7 +20,7 @@
 		"test": "vitest --run --passWithNoTests"
 	},
 	"dependencies": {
-		"harness": "github:Vzlentin/harness#53ca0e26b8e8bde20f9a726ae66e59d7c462586a"
+		"harness": "github:Vzlentin/harness#66f7a49cba7589b6adb6fa74f17954c4b5aa4e5b"
 	},
 	"optionalDependencies": {
 		"@earendil-works/pi-ai": "^1.3.0",
